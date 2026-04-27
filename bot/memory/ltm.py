@@ -95,6 +95,40 @@ async def retrieve_relevant(user_id: int, message: str, top_k: int = LTM_TOP_K) 
     return [item["memory"] for item in top]
 
 
+async def find_similar_memory(
+    user_id: int, embedding: np.ndarray, threshold: float = 0.85
+) -> dict | None:
+    """Find an existing memory with cosine similarity above threshold."""
+    memories = await get_all_memories(user_id)
+    best_match = None
+    best_sim = 0.0
+    for mem in memories:
+        if mem["embedding"] is None:
+            continue
+        sim = cosine_similarity(embedding, mem["embedding"])
+        if sim > best_sim:
+            best_sim = sim
+            best_match = mem
+    if best_sim >= threshold and best_match:
+        return best_match
+    return None
+
+
+async def update_memory(
+    memory_id: int, content: str, importance: int, embedding: np.ndarray
+) -> None:
+    """Update an existing memory entry."""
+    conn = await get_connection()
+    try:
+        await conn.execute(
+            "UPDATE memories SET content = ?, importance = ?, embedding = ? WHERE id = ?",
+            (content, importance, embedding.tobytes(), memory_id),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+
 async def count_memories(user_id: int) -> int:
     conn = await get_connection()
     try:

@@ -1,7 +1,7 @@
 import json
 import logging
 from bot.memory.embeddings import embed_texts
-from bot.memory.ltm import store_memory, count_memories, get_all_memories, delete_memories_by_ids
+from bot.memory.ltm import store_memory, count_memories, get_all_memories, delete_memories_by_ids, find_similar_memory, update_memory
 from bot.memory.stm import get_oldest_messages, delete_messages_by_ids, count_turns
 from bot.config import STM_MAX_TURNS, STM_SUMMARIZE_BATCH, LTM_COMPACTION_THRESHOLD
 
@@ -62,19 +62,29 @@ async def maybe_summarize(user_id: int, llm_call) -> bool:
     texts = [entry["content"] for entry in entries]
     embeddings = await embed_texts(texts)
 
+    new_count = 0
+    updated_count = 0
     for entry, embedding in zip(entries, embeddings):
-        await store_memory(
-            user_id=user_id,
-            category=entry.get("category", "fact"),
-            content=entry["content"],
-            importance=entry.get("importance", 5),
-            embedding=embedding,
-        )
+        existing = await find_similar_memory(user_id, embedding, threshold=0.85)
+        if existing:
+            # Update existing memory — keep higher importance
+            new_imp = max(existing["importance"], entry.get("importance", 5))
+            await update_memory(existing["id"], entry["content"], new_imp, embedding)
+            updated_count += 1
+        else:
+            await store_memory(
+                user_id=user_id,
+                category=entry.get("category", "fact"),
+                content=entry["content"],
+                importance=entry.get("importance", 5),
+                embedding=embedding,
+            )
+            new_count += 1
 
     message_ids = [msg["id"] for msg in oldest]
     await delete_messages_by_ids(message_ids)
 
-    logger.info("Summarized %d messages into %d LTM entries for user %d", len(oldest), len(entries), user_id)
+    logger.info("Summarized %d messages for user %d: %d new, %d updated", len(oldest), user_id, new_count, updated_count)
     return True
 
 

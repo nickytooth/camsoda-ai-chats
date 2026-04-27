@@ -35,8 +35,8 @@ OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-s
 PAYMENT_BOT_TOKEN = os.getenv("PAYMENT_BOT_TOKEN", "")
 
 # Humanize timing
-MIN_RESPONSE_DELAY = int(os.getenv("MIN_RESPONSE_DELAY", "60"))
-MAX_RESPONSE_DELAY = int(os.getenv("MAX_RESPONSE_DELAY", "180"))
+MIN_RESPONSE_DELAY = int(os.getenv("MIN_RESPONSE_DELAY", "5"))
+MAX_RESPONSE_DELAY = int(os.getenv("MAX_RESPONSE_DELAY", "5"))
 
 # Memory settings
 STM_MAX_TURNS = 18
