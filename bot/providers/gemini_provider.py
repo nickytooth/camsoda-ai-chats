@@ -13,6 +13,9 @@ def _get_client() -> genai.Client:
 
 
 class GeminiProvider(LLMProvider):
+    def __init__(self, model: str | None = None):
+        self._model = model or GOOGLE_MODEL
+
     async def generate(self, messages: list[dict]) -> str:
         client = _get_client()
 
@@ -28,19 +31,29 @@ class GeminiProvider(LLMProvider):
         config = genai.types.GenerateContentConfig(
             system_instruction=system_msg if system_msg else None,
             max_output_tokens=1024,
+            safety_settings=[
+                genai.types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"),
+                genai.types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
+                genai.types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
+                genai.types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"),
+            ],
         )
 
         response = await client.aio.models.generate_content(
-            model=GOOGLE_MODEL,
+            model=self._model,
             contents=contents,
             config=config,
         )
+        if response.text is None:
+            raise RuntimeError("Gemini returned empty response (likely safety-filtered)")
         return response.text
 
     async def generate_simple(self, prompt: str) -> str:
         client = _get_client()
         response = await client.aio.models.generate_content(
-            model=GOOGLE_MODEL,
+            model=self._model,
             contents=prompt,
         )
+        if response.text is None:
+            raise RuntimeError("Gemini returned empty response (likely safety-filtered)")
         return response.text

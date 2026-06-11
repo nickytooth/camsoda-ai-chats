@@ -1,0 +1,15 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+data/
+content/
+.git/
+*.session
+check_stars.py
+clear_user.py
+dump_memory.py
+test_recv.py
+send_reengage.py
+scripts/

@@ -41,6 +41,10 @@ Examples:
 - "i want to see everything" → videos
 - "send me a pic of you" → selfies
 - "show me what you got" → suggest
+- "how can I find you on camsoda" → none
+- "what's your username" → none
+- "where do you stream" → none
+- "do you have an instagram" → none
 """
 
 

@@ -37,7 +37,7 @@ class DropboxStorage(StorageBackend):
         entries = self._list_folder(self.root_folder)
         return [e.name for e in entries if isinstance(e, FolderMetadata)]
 
-    async def get_file(self, category: str, exclude_ids: list[str] | None = None) -> ContentFile | None:
+    async def get_file(self, category: str, exclude_ids: list[str] | None = None, tag: str | None = None) -> ContentFile | None:
         folder_path = f"{self.root_folder}/{category}"
         entries = self._list_folder(folder_path)
 
@@ -67,6 +67,9 @@ class DropboxStorage(StorageBackend):
             file_bytes=file_bytes,
             is_video=is_video,
         )
+
+    async def get_available_tags(self, category: str) -> list[str]:
+        return []
 
     async def get_category_count(self, category: str) -> int:
         folder_path = f"{self.root_folder}/{category}"

@@ -8,6 +8,7 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_PATH = BASE_DIR / os.getenv("DATABASE_PATH", "data/bot.db")
 PERSONA_FILE = BASE_DIR / os.getenv("PERSONA_FILE", "personas/viv.yaml")
+NSFW_PERSONA_FILE = BASE_DIR / os.getenv("NSFW_PERSONA_FILE", "personas/aishha_nsfw.yaml")
 CONTENT_CONFIG = BASE_DIR / os.getenv("CONTENT_CONFIG", "content_config.yaml")
 
 # Telegram (userbot)

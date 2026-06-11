@@ -25,7 +25,7 @@ class TelegramStorage(StorageBackend):
         index = self._load_index()
         return list(index.keys())
 
-    async def get_file(self, category: str, exclude_ids: list[str] | None = None) -> ContentFile | None:
+    async def get_file(self, category: str, exclude_ids: list[str] | None = None, tag: str | None = None) -> ContentFile | None:
         index = self._load_index()
         items = index.get(category, [])
         if not items:
@@ -43,6 +43,9 @@ class TelegramStorage(StorageBackend):
             file_id=chosen["file_id"],
             is_video=chosen.get("is_video", False),
         )
+
+    async def get_available_tags(self, category: str) -> list[str]:
+        return []
 
     async def get_category_count(self, category: str) -> int:
         index = self._load_index()

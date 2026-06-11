@@ -9,6 +9,7 @@ from bot.config import (
     TELEGRAM_PHONE,
     PAYMENT_BOT_TOKEN,
     CONTENT_CONFIG,
+    NSFW_PERSONA_FILE,
 )
 from bot.memory.db import init_db
 from bot.persona import load_persona
@@ -74,10 +75,16 @@ def create_userbot(storage: StorageBackend) -> Client:
     persona = load_persona()
     logger.info("Persona loaded: %s", persona.name)
 
+    nsfw_persona = None
+    if Path(NSFW_PERSONA_FILE).exists():
+        nsfw_persona = load_persona(NSFW_PERSONA_FILE)
+        logger.info("NSFW persona loaded from %s", NSFW_PERSONA_FILE)
+
     logger.info("Initializing LLM providers...")
     sfw_provider = AnthropicProvider()
-    nsfw_provider = GrokProvider()
+    nsfw_provider = GeminiProvider("gemini-2.5-flash")
     classifier_provider = GeminiProvider()
+    vision_provider = GrokProvider()
 
     setup(
         persona=persona,
@@ -85,6 +92,8 @@ def create_userbot(storage: StorageBackend) -> Client:
         nsfw_provider=nsfw_provider,
         classifier_provider=classifier_provider,
         storage=storage,
+        vision_provider=vision_provider,
+        nsfw_persona=nsfw_persona,
     )
 
     app = Client(

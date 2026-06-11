@@ -115,9 +115,9 @@ async def should_send_selfie(user_id: int) -> bool:
         if row["total_messages"] < 8:
             return False
 
-        # Max 1 selfie per session (roughly 2 hours)
+        # Max 1 selfie per 4 hours
         last_selfie = row["last_selfie_at"] or 0
-        if time.time() - last_selfie < 7200:
+        if time.time() - last_selfie < 14400:
             return False
 
         # Probability gate

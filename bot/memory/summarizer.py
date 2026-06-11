@@ -7,19 +7,31 @@ from bot.config import STM_MAX_TURNS, STM_SUMMARIZE_BATCH, LTM_COMPACTION_THRESH
 
 logger = logging.getLogger(__name__)
 
-SUMMARIZE_PROMPT = """Analyze the following conversation and extract structured memory entries.
-For each entry, provide:
-- category: one of "fact", "preference", "relationship", "event", "thread"
-- content: a concise statement (1-2 sentences max)
-- importance: integer 1-10 (10 = critical identity info like name, 1 = trivial)
+SUMMARIZE_PROMPT = """Analyze the following conversation and extract TWO things:
 
-Return ONLY a JSON array. No other text.
+1. "memories": structured memory entries, each with:
+   - category: one of "fact", "preference", "relationship", "event", "thread"
+   - content: a concise statement (1-2 sentences max)
+   - importance: integer 1-10 (10 = critical identity info like name, 1 = trivial)
+
+2. "facts": key-value pairs for specific known facts about the user. Use ONLY these keys when applicable:
+   name, location, age, job, gender, boundaries, agreed_prices, relationship_status
+   Also include any other notable preferences or details as custom keys (e.g. "favorite_color", "pet_name", "kinks").
+
+Return ONLY a JSON object with both keys. No other text.
 
 Example:
-[
-  {"category": "fact", "content": "User's name is Alex", "importance": 10},
-  {"category": "preference", "content": "User likes being called 'good boy'", "importance": 7}
-]
+{
+  "memories": [
+    {"category": "fact", "content": "User's name is Alex and he lives in London", "importance": 10},
+    {"category": "preference", "content": "User likes being called 'good boy'", "importance": 7}
+  ],
+  "facts": [
+    {"key": "name", "value": "Alex"},
+    {"key": "location", "value": "London"},
+    {"key": "kinks", "value": "likes being called good boy"}
+  ]
+}
 
 Conversation:
 """
@@ -54,37 +66,60 @@ async def maybe_summarize(user_id: int, llm_call) -> bool:
 
     try:
         raw_response = await llm_call(prompt)
-        entries = json.loads(raw_response)
+        parsed = json.loads(raw_response)
     except (json.JSONDecodeError, Exception) as e:
         logger.error("Summarization failed: %s", e)
         return False
 
-    texts = [entry["content"] for entry in entries]
-    embeddings = await embed_texts(texts)
+    # Handle both old format (plain array) and new format (object with memories+facts)
+    if isinstance(parsed, list):
+        entries = parsed
+        facts = []
+    else:
+        entries = parsed.get("memories", [])
+        facts = parsed.get("facts", [])
 
-    new_count = 0
-    updated_count = 0
-    for entry, embedding in zip(entries, embeddings):
-        existing = await find_similar_memory(user_id, embedding, threshold=0.85)
-        if existing:
-            # Update existing memory — keep higher importance
-            new_imp = max(existing["importance"], entry.get("importance", 5))
-            await update_memory(existing["id"], entry["content"], new_imp, embedding)
-            updated_count += 1
-        else:
-            await store_memory(
-                user_id=user_id,
-                category=entry.get("category", "fact"),
-                content=entry["content"],
-                importance=entry.get("importance", 5),
-                embedding=embedding,
-            )
-            new_count += 1
+    # Store memories as embeddings in LTM
+    if entries:
+        texts = [entry["content"] for entry in entries]
+        embeddings = await embed_texts(texts)
+
+        new_count = 0
+        updated_count = 0
+        for entry, embedding in zip(entries, embeddings):
+            existing = await find_similar_memory(user_id, embedding, threshold=0.85)
+            if existing:
+                new_imp = max(existing["importance"], entry.get("importance", 5))
+                await update_memory(existing["id"], entry["content"], new_imp, embedding)
+                updated_count += 1
+            else:
+                await store_memory(
+                    user_id=user_id,
+                    category=entry.get("category", "fact"),
+                    content=entry["content"],
+                    importance=entry.get("importance", 5),
+                    embedding=embedding,
+                )
+                new_count += 1
+
+        logger.info("Summarized %d messages for user %d: %d new, %d updated memories", len(oldest), user_id, new_count, updated_count)
+
+    # Store structured facts
+    if facts:
+        from bot.memory.facts import upsert_fact
+        fact_count = 0
+        for fact in facts:
+            key = fact.get("key", "").strip().lower()
+            value = fact.get("value", "").strip()
+            if key and value:
+                await upsert_fact(user_id, key, value)
+                fact_count += 1
+        if fact_count:
+            logger.info("Extracted %d facts for user %d", fact_count, user_id)
 
     message_ids = [msg["id"] for msg in oldest]
     await delete_messages_by_ids(message_ids)
 
-    logger.info("Summarized %d messages for user %d: %d new, %d updated", len(oldest), user_id, new_count, updated_count)
     return True
 
 

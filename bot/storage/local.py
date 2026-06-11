@@ -17,7 +17,7 @@ class LocalStorage(StorageBackend):
             return []
         return [d.name for d in self.root.iterdir() if d.is_dir()]
 
-    async def get_file(self, category: str, exclude_ids: list[str] | None = None) -> ContentFile | None:
+    async def get_file(self, category: str, exclude_ids: list[str] | None = None, tag: str | None = None) -> ContentFile | None:
         cat_dir = self.root / category
         if not cat_dir.exists():
             return None
@@ -27,14 +27,22 @@ class LocalStorage(StorageBackend):
         if category == "videos":
             return self._get_video_bundle(cat_dir, exclude_ids)
 
-        return self._get_flat_file(cat_dir, category, exclude_ids)
+        return self._get_flat_file(cat_dir, category, exclude_ids, tag=tag)
 
-    def _get_flat_file(self, cat_dir: Path, category: str, exclude_ids: set) -> ContentFile | None:
-        """Pick a random image/video from a flat folder (selfies)."""
+    def _get_flat_file(self, cat_dir: Path, category: str, exclude_ids: set, tag: str | None = None) -> ContentFile | None:
+        """Pick a random image/video from a flat folder (selfies), optionally filtered by tag prefix."""
         files = [
             f for f in cat_dir.iterdir()
             if f.is_file() and f.suffix.lower() in ALL_EXTENSIONS and str(f) not in exclude_ids
         ]
+
+        # Filter by tag prefix if specified
+        if tag and files:
+            tagged = [f for f in files if f.stem.lower().startswith(f"{tag.lower()}_")]
+            if tagged:
+                files = tagged
+            # else: fall through to all files (no match for this tag)
+
         if not files:
             return None
 
@@ -90,6 +98,21 @@ class LocalStorage(StorageBackend):
             is_video=True,
             teaser_path=str(teaser_file) if teaser_file else None,
         )
+
+    async def get_available_tags(self, category: str) -> list[str]:
+        """Get unique filename tag prefixes for a category (everything before first '_')."""
+        cat_dir = self.root / category
+        if not cat_dir.exists():
+            return []
+        tags = set()
+        for f in cat_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in ALL_EXTENSIONS:
+                name = f.stem.lower()
+                if "_" in name:
+                    tags.add(name.split("_", 1)[0])
+                else:
+                    tags.add("general")
+        return sorted(tags)
 
     async def get_category_count(self, category: str) -> int:
         cat_dir = self.root / category

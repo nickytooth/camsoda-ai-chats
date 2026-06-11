@@ -19,7 +19,11 @@ class StorageBackend(ABC):
         ...
 
     @abstractmethod
-    async def get_file(self, category: str, exclude_ids: list[str] | None = None) -> ContentFile | None:
+    async def get_file(self, category: str, exclude_ids: list[str] | None = None, tag: str | None = None) -> ContentFile | None:
+        ...
+
+    @abstractmethod
+    async def get_available_tags(self, category: str) -> list[str]:
         ...
 
     @abstractmethod

@@ -1,4 +1,6 @@
+import re
 import time
+import logging
 import numpy as np
 from bot.memory.db import get_connection
 from bot.memory.embeddings import embed_text, cosine_similarity
@@ -8,6 +10,78 @@ from bot.config import (
     LTM_IMPORTANCE_WEIGHT,
     LTM_RECENCY_WEIGHT,
 )
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Retrieval gating — skip embed+search for trivial messages
+# ---------------------------------------------------------------------------
+
+_CALLBACK_CUES = re.compile(
+    r"\b(remember|you said|you told|last time|before|didn.t you|earlier|"
+    r"you mentioned|we talked|you asked|you know|we discussed|you were)\b",
+    re.IGNORECASE,
+)
+
+_GREETING_PATTERN = re.compile(
+    r"^(h(ey|i|ello|ola)|yo|sup|what.?s up|gm|good (morning|evening|night)|"
+    r"how are you|how.?s it going|what.?s good|wyd|hru|lol|haha|"
+    r"ok(ay)?|k|sure|yeah|yep|nah|no|yes|bye|gn|ttyl|brb|omg|wow|damn|fr|ngl"
+    r"|[\U0001f600-\U0001f64f\U0001f900-\U0001f9ff\u2764\u2665\u200d]+)$",
+    re.IGNORECASE,
+)
+
+_turn_counter: dict[int, int] = {}
+_last_message_time: dict[int, float] = {}
+_LTM_EVERY_N_TURNS = 5
+_GAP_THRESHOLD = 3600  # 1 hour
+
+
+def should_retrieve(user_id: int, message: str) -> bool:
+    """Decide whether LTM retrieval is worth the embed API call."""
+    now = time.time()
+
+    # Track turns
+    _turn_counter[user_id] = _turn_counter.get(user_id, 0) + 1
+    turn = _turn_counter[user_id]
+
+    # Track gap
+    last_time = _last_message_time.get(user_id, 0)
+    _last_message_time[user_id] = now
+    gap = now - last_time if last_time > 0 else 0
+
+    # Always retrieve on callback cues ("remember", "you said", etc.)
+    if _CALLBACK_CUES.search(message):
+        logger.debug("LTM gate: FIRE (callback cue) user %d", user_id)
+        return True
+
+    # Skip pure greetings / emoji / very short trivial messages
+    stripped = message.strip()
+    if len(stripped) < 15 and _GREETING_PATTERN.match(stripped):
+        # But still fire on the every-N fallback
+        if turn % _LTM_EVERY_N_TURNS == 0:
+            logger.debug("LTM gate: FIRE (every-N fallback on greeting) user %d", user_id)
+            return True
+        logger.debug("LTM gate: SKIP (greeting/trivial) user %d", user_id)
+        return False
+
+    # Fire on first message after a gap (user came back after >1h)
+    if last_time > 0 and gap >= _GAP_THRESHOLD:
+        logger.debug("LTM gate: FIRE (gap %.0fs) user %d", gap, user_id)
+        return True
+
+    # Fire on substantive messages (>30 chars)
+    if len(stripped) > 30:
+        logger.debug("LTM gate: FIRE (long message) user %d", user_id)
+        return True
+
+    # Every-N-turns fallback so nothing goes stale
+    if turn % _LTM_EVERY_N_TURNS == 0:
+        logger.debug("LTM gate: FIRE (every-%d turns) user %d", _LTM_EVERY_N_TURNS, user_id)
+        return True
+
+    logger.debug("LTM gate: SKIP (short, no cues) user %d", user_id)
+    return False
 
 
 async def store_memory(

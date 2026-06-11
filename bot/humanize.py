@@ -41,15 +41,41 @@ def split_message(text: str) -> list[str]:
     return parts
 
 
-async def send_human_like(app: Client, chat_id: int, text: str) -> None:
+async def typing_only_delay(app: Client, chat_id: int, text: str) -> None:
+    """Just typing simulation, no read delay."""
+    typing_duration = len(text) / TYPING_CHARS_PER_SEC
+    typing_duration = min(typing_duration, 8.0)
+    typing_duration = max(typing_duration, 1.5)
+    await app.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    await asyncio.sleep(typing_duration)
+
+
+def _bubble_typing_delay(text: str) -> float:
+    """Calculate a realistic typing delay based on message length."""
+    length = len(text)
+    if length < 30:
+        return random.uniform(2.0, 4.0)
+    elif length < 80:
+        return random.uniform(3.0, 6.0)
+    else:
+        return random.uniform(5.0, 9.0)
+
+
+async def send_human_like(app: Client, chat_id: int, text: str, skip_read_delay: bool = False) -> None:
     parts = split_message(text)
 
     for i, part in enumerate(parts):
         if i == 0:
-            await simulate_human_delay(app, chat_id, text)
+            if skip_read_delay:
+                # First bubble: typing indicator scaled to full response
+                typing_duration = _bubble_typing_delay(part)
+                await app.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+                await asyncio.sleep(typing_duration)
+            else:
+                await simulate_human_delay(app, chat_id, text)
         else:
-            # Quick back-to-back, like real texting
-            pause = random.uniform(0.5, 1.5)
+            # Per-bubble delay: length-scaled, typing indicator each time
+            pause = _bubble_typing_delay(part)
             await app.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
             await asyncio.sleep(pause)
 

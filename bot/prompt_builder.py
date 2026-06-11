@@ -1,13 +1,27 @@
 from bot.persona import Persona
+from bot.time_context import get_time_prompt
 
 
-def build_prompt(
+async def build_prompt(
     persona: Persona,
     ltm_memories: list[dict],
     stm_messages: list[dict],
     push_hint: str | None = None,
+    user_name: str | None = None,
+    facts_text: str | None = None,
 ) -> list[dict]:
     system_parts = [persona.to_system_prompt()]
+
+    # User's Telegram name
+    if user_name:
+        system_parts.append(f"The user's Telegram name is {user_name}. Use it naturally sometimes.")
+
+    # Time-of-day context (includes weather)
+    system_parts.append(await get_time_prompt())
+
+    # Structured facts (always injected, deterministic)
+    if facts_text:
+        system_parts.append(facts_text)
 
     # LTM memories
     if ltm_memories:

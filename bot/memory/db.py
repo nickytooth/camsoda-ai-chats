@@ -41,11 +41,23 @@ CREATE TABLE IF NOT EXISTS pending_unlocks (
     unlocked INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS user_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.8,
+    first_seen REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
 CREATE INDEX IF NOT EXISTS idx_sent_content_user ON sent_content(user_id);
 CREATE INDEX IF NOT EXISTS idx_sent_content_paid ON sent_content(user_id, content_id, paid);
 CREATE INDEX IF NOT EXISTS idx_pending_unlocks_user ON pending_unlocks(user_id, unlocked);
+CREATE INDEX IF NOT EXISTS idx_user_facts ON user_facts(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_facts_key ON user_facts(user_id, key);
 """
 
 
