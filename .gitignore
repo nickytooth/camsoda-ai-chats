@@ -8,3 +8,4 @@ __pycache__/
 venv/
 content/
 content_index.json
+check_*.py
