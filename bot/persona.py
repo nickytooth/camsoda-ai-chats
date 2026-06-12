@@ -13,6 +13,7 @@ class Persona:
         self.character_memories = data.get("memories", {})
         self.opening_lines = data.get("opening_lines", [])
         self.boundaries = data.get("boundaries", [])
+        self.stage_instructions = data.get("stage_instructions", {})
 
     @property
     def name(self) -> str:
@@ -30,6 +31,11 @@ class Persona:
         if self.opening_lines:
             return random.choice(self.opening_lines)
         return "hey"
+
+    def get_stage_instructions(self, stage: int) -> str | None:
+        """Get stage-specific instructions for the current intimacy level."""
+        key = f"stage_{stage}"
+        return self.stage_instructions.get(key)
 
     def to_system_prompt(self) -> str:
         sections = []

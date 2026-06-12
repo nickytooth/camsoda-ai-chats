@@ -26,7 +26,7 @@ class AnthropicProvider(LLMProvider):
 
         response = await client.messages.create(
             model=ANTHROPIC_MODEL,
-            max_tokens=256,
+            max_tokens=1024,
             system=system_msg,
             messages=chat_messages,
         )

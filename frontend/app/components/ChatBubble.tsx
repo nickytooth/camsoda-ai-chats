@@ -1,0 +1,88 @@
+"use client";
+
+import React from "react";
+import { ChatMessage } from "../hooks/useChat";
+
+function formatTime(ts: number): string {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/** Render *italic actions* as actual <em> tags for story mode */
+function renderContent(content: string, isStory: boolean) {
+  if (!isStory) return content;
+
+  const parts = content.split(/(\*[^*]+\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("*") && part.endsWith("*")) {
+      return (
+        <em key={i} className="text-purple-300/80 not-italic font-light">
+          {part.slice(1, -1)}
+        </em>
+      );
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
+interface Props {
+  message: ChatMessage;
+  isStory: boolean;
+}
+
+export default function ChatBubble({ message, isStory }: Props) {
+  const isUser = message.role === "user";
+  const isImage = message.content.startsWith("[image:");
+
+  if (isImage) {
+    const url = message.content.slice(7, -1);
+    return (
+      <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3 px-4`}>
+        <div className="max-w-[320px]">
+          <img
+            src={url}
+            alt=""
+            className="rounded-2xl border border-[var(--border)]"
+          />
+          <div className={`text-[11px] text-[var(--muted)] mt-1 ${isUser ? "text-right" : "text-left"}`}>
+            {formatTime(message.timestamp)}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3 px-4`}>
+      <div className="flex flex-col max-w-[70%]">
+        {/* Avatar for her messages */}
+        {!isUser && (
+          <div className="flex items-end gap-2">
+            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-purple-600 to-pink-500 flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-white">
+              V
+            </div>
+            <div className="bg-[var(--her-bubble)] rounded-2xl rounded-bl-md px-4 py-2.5 text-[14px] leading-relaxed">
+              {renderContent(message.content, isStory)}
+            </div>
+          </div>
+        )}
+
+        {/* User messages */}
+        {isUser && (
+          <div className="bg-[var(--user-bubble)] rounded-2xl rounded-br-md px-4 py-2.5 text-[14px] leading-relaxed">
+            {message.content}
+          </div>
+        )}
+
+        {/* Timestamp */}
+        <div
+          className={`text-[11px] text-[var(--muted)] mt-1 ${
+            isUser ? "text-right pr-1" : "text-left pl-9"
+          }`}
+        >
+          {formatTime(message.timestamp)}
+        </div>
+      </div>
+    </div>
+  );
+}

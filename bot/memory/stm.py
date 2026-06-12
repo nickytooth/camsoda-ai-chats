@@ -2,25 +2,25 @@ import time
 from bot.memory.db import get_connection
 
 
-async def add_message(user_id: int, role: str, content: str) -> None:
+async def add_message(user_id: int, role: str, content: str, mode: str = "sexting") -> None:
     conn = await get_connection()
     try:
         await conn.execute(
-            "INSERT INTO messages (user_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-            (user_id, role, content, time.time()),
+            "INSERT INTO messages (user_id, role, content, timestamp, mode) VALUES (?, ?, ?, ?, ?)",
+            (user_id, role, content, time.time(), mode),
         )
         await conn.commit()
     finally:
         await conn.close()
 
 
-async def get_recent_messages(user_id: int, limit: int) -> list[dict]:
+async def get_recent_messages(user_id: int, limit: int, mode: str = "sexting") -> list[dict]:
     conn = await get_connection()
     try:
         cursor = await conn.execute(
             "SELECT role, content, timestamp FROM messages "
-            "WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
-            (user_id, limit * 2),
+            "WHERE user_id = ? AND mode = ? ORDER BY timestamp DESC LIMIT ?",
+            (user_id, mode, limit * 2),
         )
         rows = await cursor.fetchall()
         return [
@@ -31,27 +31,42 @@ async def get_recent_messages(user_id: int, limit: int) -> list[dict]:
         await conn.close()
 
 
-async def count_turns(user_id: int) -> int:
+async def count_turns(user_id: int, mode: str | None = "sexting") -> int:
+    """Count user turns. mode=None counts across all modes (shared memory)."""
     conn = await get_connection()
     try:
-        cursor = await conn.execute(
-            "SELECT COUNT(*) as cnt FROM messages WHERE user_id = ? AND role = 'user'",
-            (user_id,),
-        )
+        if mode is None:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) as cnt FROM messages WHERE user_id = ? AND role = 'user'",
+                (user_id,),
+            )
+        else:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) as cnt FROM messages WHERE user_id = ? AND mode = ? AND role = 'user'",
+                (user_id, mode),
+            )
         row = await cursor.fetchone()
         return row["cnt"] if row else 0
     finally:
         await conn.close()
 
 
-async def get_oldest_messages(user_id: int, limit: int) -> list[dict]:
+async def get_oldest_messages(user_id: int, limit: int, mode: str | None = "sexting") -> list[dict]:
+    """Get oldest messages. mode=None spans all modes (shared memory)."""
     conn = await get_connection()
     try:
-        cursor = await conn.execute(
-            "SELECT id, role, content, timestamp FROM messages "
-            "WHERE user_id = ? ORDER BY timestamp ASC LIMIT ?",
-            (user_id, limit * 2),
-        )
+        if mode is None:
+            cursor = await conn.execute(
+                "SELECT id, role, content, timestamp FROM messages "
+                "WHERE user_id = ? ORDER BY timestamp ASC LIMIT ?",
+                (user_id, limit * 2),
+            )
+        else:
+            cursor = await conn.execute(
+                "SELECT id, role, content, timestamp FROM messages "
+                "WHERE user_id = ? AND mode = ? ORDER BY timestamp ASC LIMIT ?",
+                (user_id, mode, limit * 2),
+            )
         rows = await cursor.fetchall()
         return [
             {"id": row["id"], "role": row["role"], "content": row["content"], "timestamp": row["timestamp"]}
@@ -72,5 +87,23 @@ async def delete_messages_by_ids(message_ids: list[int]) -> None:
             message_ids,
         )
         await conn.commit()
+    finally:
+        await conn.close()
+
+
+async def get_all_messages(user_id: int, mode: str = "sexting") -> list[dict]:
+    """Get all messages for a user in a specific mode (for chat history API)."""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT role, content, timestamp FROM messages "
+            "WHERE user_id = ? AND mode = ? ORDER BY timestamp ASC, id ASC",
+            (user_id, mode),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"role": row["role"], "content": row["content"], "timestamp": row["timestamp"]}
+            for row in rows
+        ]
     finally:
         await conn.close()

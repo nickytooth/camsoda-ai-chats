@@ -1,0 +1,399 @@
+"""
+Mode-aware chat engine — replaces Telegram handlers.
+Processes messages for both Sexting and Story modes.
+"""
+
+import asyncio
+import logging
+import re
+from dataclasses import dataclass, field
+
+from bot.persona import Persona, load_persona
+from bot.memory.stm import add_message, get_recent_messages, count_turns
+from bot.memory.ltm import retrieve_relevant, should_retrieve
+from bot.memory.summarizer import maybe_summarize, maybe_compact
+from bot.memory.facts import get_facts, format_facts_for_prompt
+from bot.prompt_builder import build_prompt
+from bot.router import classify
+from bot.engagement import track_message, should_soft_push, record_push
+from bot.intimacy import evaluate_message, get_stage
+from bot.providers.base import LLMProvider
+from bot.config import STM_MAX_TURNS, NSFW_PERSONA_FILE, STORY_FILE
+from bot.memory.db import get_connection
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ChatResponse:
+    """Response from the chat engine."""
+    messages: list[str] = field(default_factory=list)
+    content_urls: list[str] = field(default_factory=list)
+
+
+class ChatEngine:
+    """Unified chat engine for both Story and Sexting modes."""
+
+    def __init__(
+        self,
+        persona: Persona,
+        nsfw_persona: Persona | None,
+        sfw_provider: LLMProvider,
+        nsfw_provider: LLMProvider,
+        classifier_provider: LLMProvider,
+        vision_provider=None,
+    ):
+        self.persona = persona
+        self.nsfw_persona = nsfw_persona
+        self.sfw_provider = sfw_provider
+        self.nsfw_provider = nsfw_provider
+        self.classifier_provider = classifier_provider
+        self.vision_provider = vision_provider
+
+        # Sexting mode batching
+        self._pending: dict[int, list[str]] = {}
+        self._batch_tasks: dict[int, asyncio.Task] = {}
+        self._batch_events: dict[int, asyncio.Event] = {}
+        self._processing_lock: dict[int, asyncio.Lock] = {}
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    async def process_message(
+        self,
+        user_id: int,
+        text: str,
+        mode: str = "sexting",
+        image_bytes: bytes | None = None,
+    ) -> ChatResponse:
+        """Process a user message. Routes to correct mode pipeline."""
+        # If user sent a photo, analyze it first
+        if image_bytes and self.vision_provider:
+            try:
+                description = await self.vision_provider.analyze_image(image_bytes)
+                text = f"{text}\n[User sent a photo: {description}]" if text else f"[User sent a photo: {description}]"
+            except Exception as e:
+                logger.error("Vision analysis failed: %s", e)
+
+        if mode == "story":
+            return await self._process_story(user_id, text)
+        else:
+            await add_message(user_id, "user", text, mode="sexting")
+            return await self._process_sexting(user_id, text)
+
+    async def process_sexting_batched(
+        self,
+        user_id: int,
+        text: str,
+        image_bytes: bytes | None = None,
+        on_response=None,
+    ) -> None:
+        """
+        Add message to batch buffer. After the collect window, all
+        accumulated messages are processed together.
+        on_response: async callback(ChatResponse) called when batch is ready.
+        """
+        if image_bytes and self.vision_provider:
+            try:
+                description = await self.vision_provider.analyze_image(image_bytes)
+                text = f"{text}\n[User sent a photo: {description}]" if text else f"[User sent a photo: {description}]"
+            except Exception as e:
+                logger.error("Vision analysis failed: %s", e)
+
+        # Persist immediately so history survives mode switches / disconnects,
+        # even before the batch window flushes.
+        await add_message(user_id, "user", text, mode="sexting")
+
+        if user_id not in self._pending:
+            self._pending[user_id] = []
+        self._pending[user_id].append(text)
+
+        # Start batch task if none running
+        if user_id not in self._batch_tasks or self._batch_tasks[user_id].done():
+            self._batch_tasks[user_id] = asyncio.create_task(
+                self._batch_collect(user_id, on_response)
+            )
+
+    async def get_story_chapter(self, user_id: int) -> int:
+        """Get current story chapter for user."""
+        conn = await get_connection()
+        try:
+            cursor = await conn.execute(
+                "SELECT chapter FROM story_progress WHERE user_id = ?",
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+            return row["chapter"] if row else 1
+        finally:
+            await conn.close()
+
+    async def advance_story(self, user_id: int) -> int:
+        """Advance to next chapter, return new chapter number."""
+        import time
+        current = await self.get_story_chapter(user_id)
+        new_chapter = current + 1
+        conn = await get_connection()
+        try:
+            await conn.execute(
+                "INSERT INTO story_progress (user_id, chapter, scene, completed_at, chapter_score, chapter_messages) "
+                "VALUES (?, ?, 0, ?, 0, 0) "
+                "ON CONFLICT(user_id) DO UPDATE SET chapter = ?, completed_at = ?, "
+                "chapter_score = 0, chapter_messages = 0",
+                (user_id, new_chapter, time.time(), new_chapter, time.time()),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+        return new_chapter
+
+    # ------------------------------------------------------------------
+    # Story mode — single message, Grok only
+    # ------------------------------------------------------------------
+
+    async def _process_story(self, user_id: int, text: str) -> ChatResponse:
+        mode = "story"
+        await add_message(user_id, "user", text, mode=mode)
+
+        # Summarize if needed
+        async def _llm_call(prompt: str) -> str:
+            return await self.classifier_provider.generate_simple(prompt)
+
+        await maybe_summarize(user_id, _llm_call)
+        await maybe_compact(user_id, _llm_call)
+
+        stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
+        if not stm or not any(m["role"] == "user" for m in stm):
+            stm = [{"role": "user", "content": text}]
+
+        # LTM
+        ltm = []
+        if should_retrieve(user_id, text):
+            ltm = await retrieve_relevant(user_id, text)
+
+        # Facts
+        user_facts = await get_facts(user_id)
+        facts_text = format_facts_for_prompt(user_facts)
+
+        # Extract user name from facts
+        user_name = None
+        for f in (user_facts or []):
+            if f["key"] == "name":
+                user_name = f["value"]
+                break
+
+        # Story chapter
+        chapter = await self.get_story_chapter(user_id)
+
+        # Build prompt — story mode always uses Grok (nsfw_provider) and SFW persona with story context
+        prompt_messages = await build_prompt(
+            self.persona, ltm, stm,
+            mode=mode,
+            user_name=user_name,
+            facts_text=facts_text,
+            story_chapter=chapter,
+        )
+
+        try:
+            response_text = await self.nsfw_provider.generate(prompt_messages)
+        except Exception as e:
+            logger.error("Story mode LLM failed: %s", e)
+            return ChatResponse(messages=["*She pauses, lost in thought for a moment...*"])
+
+        if not response_text or not response_text.strip():
+            return ChatResponse(messages=["*She looks at you, searching for the right words...*"])
+
+        await add_message(user_id, "assistant", response_text, mode=mode)
+
+        # Score this exchange and maybe advance the chapter
+        await self._maybe_advance_chapter(user_id, chapter, text, response_text, _llm_call)
+
+        # Split into multiple messages
+        parts = self._split_response(response_text)
+        return ChatResponse(messages=parts)
+
+    async def _maybe_advance_chapter(self, user_id: int, chapter: int, user_text: str, last_response: str, llm_call) -> None:
+        """Score the exchange and advance the chapter once enough progress accrues."""
+        import yaml
+        from pathlib import Path
+        from bot.config import STORY_FILE
+        from bot.story_progression import record_turn
+
+        path = Path(STORY_FILE)
+        if not path.exists():
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            story_data = yaml.safe_load(f)
+
+        chapters = story_data.get("chapters", [])
+        total = story_data.get("meta", {}).get("total_chapters", len(chapters))
+
+        # Already at last chapter
+        if chapter >= total:
+            return
+
+        current = None
+        for ch in chapters:
+            if ch.get("id") == chapter:
+                current = ch
+                break
+        if not current:
+            return
+
+        try:
+            should_advance = await record_turn(
+                user_id, chapter, user_text, last_response, current, llm_call
+            )
+            if should_advance:
+                new_ch = await self.advance_story(user_id)
+                logger.info("Story advanced to chapter %d for user %d", new_ch, user_id)
+        except Exception as e:
+            logger.warning("Chapter progression check failed: %s", e)
+
+    # ------------------------------------------------------------------
+    # Sexting mode — batched, SFW/NSFW switch
+    # ------------------------------------------------------------------
+
+    async def _process_sexting(self, user_id: int, text: str) -> ChatResponse:
+        # NOTE: the user message is persisted at ingestion time
+        # (process_sexting_batched / process_message), not here, so that
+        # history is never lost while a batch is still pending.
+        mode = "sexting"
+
+        async def _llm_call(prompt: str) -> str:
+            return await self.classifier_provider.generate_simple(prompt)
+
+        await maybe_summarize(user_id, _llm_call)
+        await maybe_compact(user_id, _llm_call)
+
+        stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
+        if not stm or not any(m["role"] == "user" for m in stm):
+            stm = [{"role": "user", "content": text}]
+
+        # Classify SFW/NSFW
+        classification = await classify(text, self.classifier_provider.generate_simple)
+        await track_message(user_id, classification)
+
+        # Evaluate intimacy progression
+        intimacy_stage = await evaluate_message(user_id, text, _llm_call)
+
+        # Pick provider and persona based on stage
+        # Stage 1-2: Always use SFW provider (Victoria deflects, doesn't reciprocate)
+        # Stage 3: Normal SFW/NSFW routing
+        if intimacy_stage >= 3 and classification == "nsfw":
+            provider = self.nsfw_provider
+            active_persona = self.nsfw_persona or self.persona
+        else:
+            provider = self.sfw_provider
+            active_persona = self.persona
+
+        # LTM
+        ltm = []
+        if should_retrieve(user_id, text):
+            ltm = await retrieve_relevant(user_id, text)
+
+        # Soft push hint
+        push_hint = None
+        if await should_soft_push(user_id):
+            push_hint = (
+                "Naturally hint that you have private photos you could share — "
+                "be subtle, seductive, like it's a secret between you two."
+            )
+            await record_push(user_id)
+
+        # Facts
+        user_facts = await get_facts(user_id)
+        facts_text = format_facts_for_prompt(user_facts)
+
+        user_name = None
+        for f in (user_facts or []):
+            if f["key"] == "name":
+                user_name = f["value"]
+                break
+
+        # Build and generate
+        prompt_messages = await build_prompt(
+            active_persona, ltm, stm,
+            mode=mode,
+            push_hint=push_hint,
+            user_name=user_name,
+            facts_text=facts_text,
+            intimacy_stage=intimacy_stage,
+        )
+
+        try:
+            response_text = await provider.generate(prompt_messages)
+        except Exception as e:
+            logger.warning("Primary provider failed: %s — falling back", e)
+            fallback = self.nsfw_provider if provider is self.sfw_provider else self.sfw_provider
+            try:
+                response_text = await fallback.generate(prompt_messages)
+            except Exception as e2:
+                logger.error("Fallback also failed: %s", e2)
+                return ChatResponse(messages=["..."])
+
+        if not response_text or not response_text.strip():
+            return ChatResponse()
+
+        await add_message(user_id, "assistant", response_text, mode=mode)
+
+        parts = self._split_response(response_text)
+        return ChatResponse(messages=parts)
+
+    # ------------------------------------------------------------------
+    # Batching for sexting mode
+    # ------------------------------------------------------------------
+
+    async def _batch_collect(self, user_id: int, on_response=None) -> None:
+        """Wait for collect window, then process all accumulated messages."""
+        import random
+        from bot.config import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY
+        from bot.time_context import get_response_delay_multiplier
+
+        multiplier = get_response_delay_multiplier()
+        delay = random.uniform(MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY) * multiplier
+        delay = min(delay, 15.0)  # Cap at 15s for web
+        logger.info("Batch collect: %.1fs for user %d", delay, user_id)
+        await asyncio.sleep(delay)
+
+        texts = self._pending.pop(user_id, [])
+        if not texts:
+            return
+
+        # Deduplicate consecutive identical messages
+        deduped = []
+        i = 0
+        while i < len(texts):
+            msg = texts[i]
+            count = 1
+            while i + count < len(texts) and texts[i + count] == msg:
+                count += 1
+            if count > 1:
+                deduped.append(f'[User sent the same message {count} times: "{msg[:100]}"]')
+            else:
+                deduped.append(msg)
+            i += count
+
+        combined = "\n".join(deduped)
+
+        if user_id not in self._processing_lock:
+            self._processing_lock[user_id] = asyncio.Lock()
+
+        async with self._processing_lock[user_id]:
+            try:
+                response = await self._process_sexting(user_id, combined)
+                if on_response:
+                    await on_response(response)
+            except Exception as e:
+                logger.error("Batch processing failed for user %d: %s", user_id, e, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _split_response(text: str) -> list[str]:
+        """Split response into multiple message bubbles."""
+        text = text.replace("\u2014", "-").replace("\u2013", "-")
+        parts = [p.strip() for p in text.split("\n") if p.strip()]
+        return parts if parts else [text.strip()]

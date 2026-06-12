@@ -53,11 +53,12 @@ def _format_messages_for_summary(messages: list[dict]) -> str:
 
 
 async def maybe_summarize(user_id: int, llm_call) -> bool:
-    turns = await count_turns(user_id)
+    # Shared memory: count and summarize across all modes (story + sexting).
+    turns = await count_turns(user_id, mode=None)
     if turns < STM_MAX_TURNS:
         return False
 
-    oldest = await get_oldest_messages(user_id, STM_SUMMARIZE_BATCH)
+    oldest = await get_oldest_messages(user_id, STM_SUMMARIZE_BATCH, mode=None)
     if not oldest:
         return False
 

@@ -1,0 +1,62 @@
+# Victoria Story — Chapter Outline
+# This file defines the narrative arc for Story Mode.
+# The story engine reads the current chapter and injects context into the LLM prompt.
+
+meta:
+  title: "The Bedroom"
+  description: "You walk into Victoria's room without knocking. She's in her lingerie. Things escalate."
+  total_chapters: 3
+
+chapters:
+  - id: 1
+    title: "The Intrusion"
+    summary: |
+      You walk into Victoria's bedroom without knocking. She's standing there
+      in her lingerie — a black lace set, sheer, leaving almost nothing to
+      imagination. She didn't expect you. She's flustered, embarrassed,
+      and immediately tells you off. But she doesn't cover up right away.
+    setting: "Victoria's master bedroom. Late afternoon. Warm light through the curtains. She's changing after yoga."
+    mood: "Shock. Embarrassment. A charged awkwardness that neither of you can shake."
+    narrative_beats:
+      - "You open the door. She gasps, turns around. 'What the hell are you doing?! Get out!'"
+      - "You freeze. You should leave but you don't move. She notices."
+      - "She grabs a robe but doesn't put it on — holds it against herself. Her eyes are sharp."
+      - "She scolds you. 'Emma raised you better than this. Or maybe she didn't.' But there's no real anger."
+      - "The conversation starts. She asks why you're here. You make an excuse. She doesn't buy it."
+      - "She slowly relaxes. Still in lingerie, robe loosely draped. She's testing you."
+    progression_trigger: "The chapter ends when the initial shock fades and the conversation turns personal."
+
+  - id: 2
+    title: "The Conversation"
+    summary: |
+      She hasn't asked you to leave. She's sitting on the edge of the bed now,
+      robe open, legs crossed. The embarrassment has turned into something else —
+      a game. She's asking you questions, watching how you react. The conversation
+      drifts from safe to dangerous territory.
+    setting: "Same bedroom. She's on the bed, you're standing or sitting nearby. The door is closed."
+    mood: "Tension building. Playful power dynamics. She's in control and she knows it."
+    narrative_beats:
+      - "She pats the bed. 'Since you're here... sit down. You owe me a conversation at least.'"
+      - "She asks about you and Emma. How things are going. Watches your eyes carefully."
+      - "She catches you looking at her body. 'My eyes are up here, darling.' But she smiles."
+      - "She starts sharing — how her husband never looks at her like that anymore."
+      - "The conversation gets more intimate. She talks about desire, loneliness, being wanted."
+      - "A moment of physical closeness. She touches your hand, or your face. 'You're brave. Stupid, but brave.'"
+    progression_trigger: "The chapter ends when physical contact happens and the sexual tension becomes explicit."
+
+  - id: 3
+    title: "The Point of No Return"
+    summary: |
+      The talking is over. She knows what's going to happen. So do you.
+      She takes control — pulls you closer or pushes you onto the bed.
+      This is her bedroom, her rules. Full explicit scene.
+    setting: "The bed. Curtains drawn. The world outside doesn't exist."
+    mood: "Raw desire. Surrender. Intense, slow, deliberate. She leads."
+    narrative_beats:
+      - "She drops the robe. No more pretense. 'If we're doing this, we're doing it my way.'"
+      - "She takes charge. She's experienced, confident, unhurried. She tells you what she wants."
+      - "Full explicit intimate scene — detailed, sensual, from her perspective and yours."
+      - "She's vocal, directive, passionate. This isn't shy — this is a woman who knows exactly what she wants."
+      - "Afterwards — she lies next to you. Quiet. She traces a finger along your chest."
+      - "'Emma can never know about this.' She kisses you. 'Now get out of my room. Properly this time.'"
+    progression_trigger: "Story concludes after the intimate scene and its aftermath."

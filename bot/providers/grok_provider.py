@@ -29,7 +29,7 @@ class GrokProvider(LLMProvider):
         response = await client.chat.completions.create(
             model=XAI_MODEL,
             messages=messages,
-            max_tokens=256,
+            max_tokens=1024,
         )
         return response.choices[0].message.content
 
