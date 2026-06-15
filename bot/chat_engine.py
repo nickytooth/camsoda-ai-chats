@@ -15,9 +15,9 @@ from bot.memory.ltm import retrieve_relevant, should_retrieve
 from bot.memory.summarizer import maybe_summarize, maybe_compact
 from bot.memory.facts import get_facts, format_facts_for_prompt
 from bot.prompt_builder import build_prompt
-from bot.router import classify
+from bot.router import classify_fast
 from bot.engagement import track_message, should_soft_push, record_push, get_engagement_state
-from bot.intimacy import evaluate_message, get_stage
+from bot.intimacy import evaluate_message
 from bot.mood import update_mood, get_mood
 from bot.time_context import get_time_period
 from bot.providers.base import LLMProvider
@@ -67,7 +67,6 @@ class ChatEngine:
         nsfw_provider: LLMProvider,
         classifier_provider: LLMProvider,
         vision_provider=None,
-        force_stage: int | None = None,
     ):
         self.persona = persona
         self.nsfw_persona = nsfw_persona
@@ -75,9 +74,6 @@ class ChatEngine:
         self.nsfw_provider = nsfw_provider
         self.classifier_provider = classifier_provider
         self.vision_provider = vision_provider
-        # When set (e.g. 3), skip the staged progression and treat every
-        # sexting message at this intimacy stage, routed through the NSFW provider.
-        self.force_stage = force_stage
 
         # Sexting mode batching
         self._pending: dict[int, list[str]] = {}
@@ -206,10 +202,9 @@ class ChatEngine:
         if not stm or not any(m["role"] == "user" for m in stm):
             return ChatResponse()
 
-        stage = self.force_stage or await get_stage(user_id)
         mood = await get_mood(user_id)
-        active_persona = (self.nsfw_persona or self.persona) if self.force_stage else self.persona
-        nudge_provider = self.nsfw_provider if self.force_stage else self.sfw_provider
+        active_persona = self.nsfw_persona or self.persona
+        nudge_provider = self.nsfw_provider
 
         user_facts = await get_facts(user_id)
         facts_text = format_facts_for_prompt(user_facts)
@@ -234,7 +229,6 @@ class ChatEngine:
             push_hint=hint,
             user_name=user_name,
             facts_text=facts_text,
-            intimacy_stage=stage,
             mood=mood,
             already_greeted=True,
         )
@@ -428,35 +422,23 @@ class ChatEngine:
         if not stm or not any(m["role"] == "user" for m in stm):
             stm = [{"role": "user", "content": text}]
 
-        # Classify SFW/NSFW
-        classification = await classify(text, self.classifier_provider.generate_simple)
+        # Score per-message emotional signals (also returns nsfw flag).
+        # This is a single Gemini call that doubles as the NSFW classifier.
+        signals = await evaluate_message(user_id, text, _llm_call)
+
+        # Classify SFW/NSFW: free keyword fast-path, else the signal eval's flag.
+        fast = classify_fast(text)
+        classification = fast or ("nsfw" if signals.get("nsfw") else "sfw")
         await track_message(user_id, classification)
 
-        # Evaluate intimacy progression (returns stage + per-dimension signals)
-        intimacy_stage, signals = await evaluate_message(user_id, text, _llm_call)
-
-        # Single-persona "always open" mode: ignore the staged progression.
-        if self.force_stage:
-            intimacy_stage = self.force_stage
-
-        # Update short-term mood from the same signals (no extra LLM call)
-        await update_mood(user_id, signals, classification, intimacy_stage, get_time_period())
+        # Update short-term mood from the signals (no extra LLM call)
+        await update_mood(user_id, signals, classification, get_time_period())
         mood = await get_mood(user_id)
 
-        # Pick provider and persona based on stage
-        if self.force_stage:
-            # Fully open from the start — everything runs through the NSFW
-            # provider with the single open persona.
-            provider = self.nsfw_provider
-            active_persona = self.nsfw_persona or self.persona
-        elif intimacy_stage >= 3 and classification == "nsfw":
-            # Stage 3: explicit content routes to the NSFW provider
-            provider = self.nsfw_provider
-            active_persona = self.nsfw_persona or self.persona
-        else:
-            # Stage 1-2: SFW provider (Victoria deflects, doesn't reciprocate)
-            provider = self.sfw_provider
-            active_persona = self.persona
+        # Victoria is always fully open — everything runs through the NSFW
+        # provider with the open persona.
+        provider = self.nsfw_provider
+        active_persona = self.nsfw_persona or self.persona
 
         # LTM
         ltm = []
@@ -489,7 +471,6 @@ class ChatEngine:
             push_hint=push_hint,
             user_name=user_name,
             facts_text=facts_text,
-            intimacy_stage=intimacy_stage,
             mood=mood,
             last_seen_note=last_seen_note,
             already_greeted=already_greeted,
@@ -522,10 +503,8 @@ class ChatEngine:
         """Wait for collect window, then process all accumulated messages."""
         import random
         from bot.config import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY
-        from bot.time_context import get_response_delay_multiplier
 
-        multiplier = get_response_delay_multiplier()
-        delay = random.uniform(MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY) * multiplier
+        delay = random.uniform(MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY)
         delay = min(delay, 15.0)  # Cap at 15s for web
         logger.info("Batch collect: %.1fs for user %d", delay, user_id)
         await asyncio.sleep(delay)

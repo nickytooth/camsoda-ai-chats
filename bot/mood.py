@@ -77,8 +77,8 @@ async def get_mood(user_id: int) -> dict:
     return {"mood": mood, "intensity": intensity}
 
 
-def _derive_mood(signals: dict, classification: str, stage: int, time_period: str) -> tuple[str, int]:
-    """Pure logic: map intimacy signals + context to a (mood, intensity) pair."""
+def _derive_mood(signals: dict, classification: str, time_period: str) -> tuple[str, int]:
+    """Pure logic: map per-message signals + context to a (mood, intensity) pair."""
     charm = signals.get("charm", 0)
     respect = signals.get("respect", 0)
     humor = signals.get("humor", 0)
@@ -91,8 +91,8 @@ def _derive_mood(signals: dict, classification: str, stage: int, time_period: st
     if pushing <= -3 or vulgarity <= -2 or respect <= -1:
         return "distant", 2
 
-    # Genuine heat, but only once she's actually open (stage 3).
-    if classification == "nsfw" and stage >= 3:
+    # Genuine heat — she's always open, so explicit talk turns her on.
+    if classification == "nsfw":
         return "aroused", 3
 
     # Late night + decent behaviour → her softer, lonelier side.
@@ -118,12 +118,11 @@ async def update_mood(
     user_id: int,
     signals: dict,
     classification: str,
-    stage: int,
     time_period: str,
 ) -> dict:
     """Recompute and persist the user's mood from the latest message signals."""
     await _ensure_table()
-    mood, intensity = _derive_mood(signals or {}, classification, stage, time_period)
+    mood, intensity = _derive_mood(signals or {}, classification, time_period)
 
     conn = await get_connection()
     try:

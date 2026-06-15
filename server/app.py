@@ -18,8 +18,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from bot.config import (
-    SERVER_HOST, SERVER_PORT, CONTENT_DIR, PERSONA_FILE, NSFW_PERSONA_FILE,
-    DEFAULT_USER_ID, USE_SINGLE_PERSONA, SINGLE_PERSONA_FILE, FORCE_STAGE,
+    SERVER_HOST, SERVER_PORT, CONTENT_DIR,
+    DEFAULT_USER_ID, PERSONA_FILE_SEXTING,
 )
 from bot.memory.db import init_db, get_connection
 from bot.memory.stm import get_all_messages
@@ -47,15 +47,10 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
 
-    logger.info("Loading personas...")
-    if USE_SINGLE_PERSONA and Path(SINGLE_PERSONA_FILE).exists():
-        persona = load_persona(SINGLE_PERSONA_FILE)
-        nsfw_persona = persona  # one open persona drives everything
-        logger.info("Single-persona mode: %s (forced stage %s)", persona.name, FORCE_STAGE)
-    else:
-        persona = load_persona()
-        nsfw_persona = load_persona(NSFW_PERSONA_FILE) if Path(NSFW_PERSONA_FILE).exists() else None
-        logger.info("Persona loaded: %s", persona.name)
+    logger.info("Loading persona...")
+    persona = load_persona(PERSONA_FILE_SEXTING)
+    nsfw_persona = persona  # one always-open persona drives everything
+    logger.info("Persona loaded: %s", persona.name)
 
     logger.info("Initializing LLM providers...")
     sfw_provider = AnthropicProvider()
@@ -70,7 +65,6 @@ async def lifespan(app: FastAPI):
         nsfw_provider=nsfw_provider,
         classifier_provider=classifier_provider,
         vision_provider=vision_provider,
-        force_stage=FORCE_STAGE,
     )
     logger.info("Chat engine ready")
 

@@ -50,7 +50,6 @@ async def build_prompt(
     user_name: str | None = None,
     facts_text: str | None = None,
     story_chapter: int = 1,
-    intimacy_stage: int = 1,
     mood: dict | None = None,
     last_seen_note: str | None = None,
     already_greeted: bool = False,
@@ -93,12 +92,6 @@ async def build_prompt(
             "- React to what he just said and pick up naturally from your last messages.\n"
             "- A woman who messaged first doesn't reintroduce herself — she keeps the thread going."
         )
-
-    # Intimacy stage instructions (sexting mode only)
-    if mode == "sexting":
-        stage_instructions = persona.get_stage_instructions(intimacy_stage)
-        if stage_instructions:
-            system_parts.append(f"=== INTIMACY STAGE {intimacy_stage}/3 ===\n{stage_instructions}")
 
     # Short-term mood (sexting mode only) — fast, volatile emotional colour
     if mode == "sexting":

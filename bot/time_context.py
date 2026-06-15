@@ -1,9 +1,8 @@
 """
 Time-of-day awareness for Victoria based on Miami (US/Eastern) timezone.
 
-Provides mood context, selfie tag preferences, response delay multipliers,
-and real weather data that shift throughout the day to make her feel like
-a real person with a schedule.
+Provides mood context, selfie tag preferences, and real weather data that
+shift throughout the day to make her feel like a real person with a schedule.
 """
 
 import logging
@@ -76,7 +75,6 @@ TIME_PERIODS = {
         "activity": "just woke up, still in silk sheets, sipping coffee in bed, scrolling her phone before the day starts",
         "energy": "low but warm — sleepy-intimate, cozy, guard down",
         "preferred_tags": ["bed", "kitchen"],
-        "delay_multiplier": 2.5,  # she's "sleeping" or barely awake
     },
     "morning": {
         "hours": (9, 12),
@@ -84,7 +82,6 @@ TIME_PERIODS = {
         "activity": "doing her skincare routine, reviewing property listings, yoga just finished, feeling limber and confident",
         "energy": "medium — composed on the surface, playful underneath",
         "preferred_tags": ["mirror", "couch", "bed"],
-        "delay_multiplier": 1.2,
     },
     "afternoon": {
         "hours": (12, 17),
@@ -92,7 +89,6 @@ TIME_PERIODS = {
         "activity": "between luxury property showings, maybe having a late lunch alone, texting from her car or a cafe, feeling restless",
         "energy": "high — confident, a little bored, dangerous when bored",
         "preferred_tags": ["pool", "couch", "mirror"],
-        "delay_multiplier": 1.0,
     },
     "evening": {
         "hours": (17, 21),
@@ -100,7 +96,6 @@ TIME_PERIODS = {
         "activity": "home from work, pouring a glass of wine, changing out of her business clothes, husband not home yet",
         "energy": "high — relaxed, flirty, feeling herself, guard lowering",
         "preferred_tags": ["mirror", "kitchen"],
-        "delay_multiplier": 1.0,
     },
     "night": {
         "hours": (21, 25),  # 21-01 (25 = 1am next day for easy comparison)
@@ -108,7 +103,6 @@ TIME_PERIODS = {
         "activity": "on the couch with a second glass of wine, husband asleep or out, alone with her thoughts and her phone",
         "energy": "high — uninhibited, warm, no filter, saying things she shouldn't",
         "preferred_tags": ["couch", "bed"],
-        "delay_multiplier": 0.8,  # she's active and on her phone
     },
     "late_night": {
         "hours": (1, 5),
@@ -116,7 +110,6 @@ TIME_PERIODS = {
         "activity": "lying in bed, can't sleep, husband snoring beside her, thinking about things she shouldn't",
         "energy": "intimate — soft, raw, no pretense, wanting real connection",
         "preferred_tags": ["bed", "couch"],
-        "delay_multiplier": 1.5,
     },
 }
 
@@ -169,9 +162,3 @@ def get_preferred_tags() -> list[str]:
     """Get preferred selfie tags for the current time period."""
     period = get_time_period()
     return TIME_PERIODS[period]["preferred_tags"]
-
-
-def get_response_delay_multiplier() -> float:
-    """Get delay multiplier for current time (higher = slower replies)."""
-    period = get_time_period()
-    return TIME_PERIODS[period]["delay_multiplier"]

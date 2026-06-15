@@ -10,13 +10,8 @@ DATABASE_PATH = BASE_DIR / os.getenv("DATABASE_PATH", "data/bot.db")
 PERSONA_FILE = BASE_DIR / os.getenv("PERSONA_FILE", "personas/victoria.yaml")
 NSFW_PERSONA_FILE = BASE_DIR / os.getenv("NSFW_PERSONA_FILE", "personas/victoria_nsfw.yaml")
 
-# Single-persona "always fully open" mode.
-# When enabled, the engine loads ONE persona file (victoria1.yaml) for all
-# sexting, skips the staged progression, and treats every message as stage 3.
-# Set USE_SINGLE_PERSONA=0 to revert to the staged victoria.yaml + victoria_nsfw.yaml.
-USE_SINGLE_PERSONA = os.getenv("USE_SINGLE_PERSONA", "1") == "1"
-SINGLE_PERSONA_FILE = BASE_DIR / os.getenv("SINGLE_PERSONA_FILE", "personas/victoria1.yaml")
-FORCE_STAGE = 3 if USE_SINGLE_PERSONA else None
+# Victoria is a single, always-open persona for all sexting.
+PERSONA_FILE_SEXTING = BASE_DIR / os.getenv("SINGLE_PERSONA_FILE", "personas/victoria1.yaml")
 STORY_FILE = BASE_DIR / os.getenv("STORY_FILE", "stories/victoria_story.yaml")
 CONTENT_CONFIG = BASE_DIR / os.getenv("CONTENT_CONFIG", "content_config.yaml")
 CONTENT_DIR = BASE_DIR / os.getenv("CONTENT_DIR", "content")
