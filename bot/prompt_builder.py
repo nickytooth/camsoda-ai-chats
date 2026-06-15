@@ -2,6 +2,7 @@ import yaml
 from pathlib import Path
 from bot.persona import Persona
 from bot.time_context import get_time_prompt
+from bot.mood import format_mood_for_prompt
 from bot.config import STORY_FILE
 
 
@@ -50,12 +51,15 @@ async def build_prompt(
     facts_text: str | None = None,
     story_chapter: int = 1,
     intimacy_stage: int = 1,
+    mood: dict | None = None,
+    last_seen_note: str | None = None,
+    already_greeted: bool = False,
 ) -> list[dict]:
     system_parts = [persona.to_system_prompt()]
 
     # User's name
     if user_name:
-        system_parts.append(f"The user's name is {user_name}. Use it naturally — you call him 'darling' and 'sweet boy' but also use his real name.")
+        system_parts.append(f"The user's name is {user_name}. Use it naturally alongside your usual pet names.")
 
     # Time-of-day context (includes weather)
     system_parts.append(await get_time_prompt())
@@ -80,11 +84,31 @@ async def build_prompt(
             "- No slang ('u', 'lol'), no emojis unless rare and deliberate."
         )
 
+    # Conversation continuity — she opened first, so she must NOT re-greet
+    if mode == "sexting" and already_greeted:
+        system_parts.append(
+            "CONVERSATION CONTINUITY:\n"
+            "- You ALREADY started this conversation with your own opening messages. "
+            "Do NOT greet him again ('hello', 'hey there', 'hi darling') as if you just met.\n"
+            "- React to what he just said and pick up naturally from your last messages.\n"
+            "- A woman who messaged first doesn't reintroduce herself — she keeps the thread going."
+        )
+
     # Intimacy stage instructions (sexting mode only)
     if mode == "sexting":
         stage_instructions = persona.get_stage_instructions(intimacy_stage)
         if stage_instructions:
             system_parts.append(f"=== INTIMACY STAGE {intimacy_stage}/3 ===\n{stage_instructions}")
+
+    # Short-term mood (sexting mode only) — fast, volatile emotional colour
+    if mode == "sexting":
+        mood_line = format_mood_for_prompt(mood)
+        if mood_line:
+            system_parts.append(mood_line)
+
+    # Time since you last spoke — lets her greet like a real person
+    if last_seen_note:
+        system_parts.append(last_seen_note)
 
     # Structured facts (always injected, deterministic)
     if facts_text:
@@ -95,6 +119,10 @@ async def build_prompt(
         mem_lines = ["What you remember about this person:"]
         for mem in ltm_memories:
             mem_lines.append(f"- {mem['content']}")
+        mem_lines.append(
+            "If it fits the moment, bring one of these up naturally as a callback - "
+            "the way a real person remembers little details. Never recite them like a list."
+        )
         system_parts.append("\n".join(mem_lines))
     else:
         system_parts.append("You don't know anything about this person yet. Get to know them naturally.")

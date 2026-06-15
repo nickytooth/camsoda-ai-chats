@@ -25,6 +25,7 @@ export function useChat({ wsUrl = "ws://localhost:8000/ws/chat", userId = 1, use
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<NodeJS.Timeout | null>(null);
   const idCounter = useRef(0);
+  const openingAnimating = useRef(false);
 
   const genId = () => `msg-${Date.now()}-${idCounter.current++}`;
 
@@ -42,12 +43,36 @@ export function useChat({ wsUrl = "ws://localhost:8000/ws/chat", userId = 1, use
         mode: m,
       }));
 
-      // Typing animation for opening message (single assistant message = first visit)
-      if (loaded.length === 1 && loaded[0].role === "assistant" && m === "sexting") {
-        setMessages([]);
-        setIsTyping(true);
-        await new Promise((r) => setTimeout(r, 1500));
-        setIsTyping(false);
+      // Fresh opening: Victoria initiated and the user hasn't replied yet
+      // (every loaded message is from her). Play it out with the typing
+      // indicator and send the bubbles one by one, instead of dumping them.
+      const isFreshOpening =
+        m === "sexting" &&
+        loaded.length > 0 &&
+        loaded.every((msg) => msg.role === "assistant");
+
+      if (isFreshOpening) {
+        // Guard against double-run (React StrictMode mounts effects twice in
+        // dev, which would otherwise append every bubble twice).
+        if (openingAnimating.current) return;
+        openingAnimating.current = true;
+        try {
+          setMessages([]);
+          for (let i = 0; i < loaded.length; i++) {
+            setIsTyping(true);
+            // Longer pause before the first bubble, a little shorter between the rest
+            await new Promise((r) => setTimeout(r, i === 0 ? 2500 : 1300));
+            setIsTyping(false);
+            setMessages((prev) => [...prev, loaded[i]]);
+            // small gap so consecutive bubbles don't appear in the same frame
+            if (i < loaded.length - 1) {
+              await new Promise((r) => setTimeout(r, 350));
+            }
+          }
+        } finally {
+          openingAnimating.current = false;
+        }
+        return;
       }
 
       setMessages(loaded);
@@ -148,6 +173,22 @@ export function useChat({ wsUrl = "ws://localhost:8000/ws/chat", userId = 1, use
     [mode]
   );
 
+  // AI Help — ask the backend to draft a reply the user can approve/edit
+  const suggestReply = useCallback(async (): Promise<string> => {
+    try {
+      const res = await fetch(
+        `http://localhost:8000/api/suggest?user_id=${userId}&mode=${mode}`,
+        { method: "POST" }
+      );
+      if (!res.ok) return "";
+      const data = await res.json();
+      return (data.suggestion || "").trim();
+    } catch (e) {
+      console.error("Suggest failed:", e);
+      return "";
+    }
+  }, [userId, mode]);
+
   // Switch mode
   const switchMode = useCallback(
     (newMode: "sexting" | "story") => {
@@ -177,5 +218,6 @@ export function useChat({ wsUrl = "ws://localhost:8000/ws/chat", userId = 1, use
     isWaitingStory,
     sendMessage,
     switchMode,
+    suggestReply,
   };
 }

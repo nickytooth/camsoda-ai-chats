@@ -83,6 +83,7 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
     isWaitingStory,
     sendMessage,
     switchMode,
+    suggestReply,
   } = useChat({ userId, userName });
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -162,6 +163,7 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
         {/* Input */}
         <ChatInput
           onSend={sendMessage}
+          onSuggest={suggestReply}
           disabled={inputDisabled}
           placeholder={
             inputDisabled

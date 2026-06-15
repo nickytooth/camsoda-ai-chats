@@ -100,7 +100,7 @@ async def get_intimacy_state(user_id: int) -> dict:
         await conn.close()
 
 
-async def evaluate_message(user_id: int, text: str, llm_call) -> int:
+async def evaluate_message(user_id: int, text: str, llm_call) -> tuple[int, dict]:
     """
     Evaluate a user message and update intimacy score/stage.
     
@@ -110,7 +110,9 @@ async def evaluate_message(user_id: int, text: str, llm_call) -> int:
         llm_call: async function(prompt: str) -> str (Gemini)
     
     Returns:
-        Current stage after evaluation
+        (current_stage, signals) where signals is the parsed per-dimension
+        score dict (charm/respect/humor/vulgarity/pushing). signals is {} on
+        failure so callers can fall back gracefully.
     """
     await _ensure_table()
 
@@ -130,6 +132,7 @@ async def evaluate_message(user_id: int, text: str, llm_call) -> int:
 
     # Get score from LLM
     score_delta = 0
+    signals: dict = {}
     try:
         response = await llm_call(prompt)
         # Parse JSON from response
@@ -138,6 +141,13 @@ async def evaluate_message(user_id: int, text: str, llm_call) -> int:
             response = response.split("\n", 1)[1].rsplit("```", 1)[0]
         
         data = json.loads(response)
+        signals = {
+            "charm": data.get("charm", 0),
+            "respect": data.get("respect", 0),
+            "humor": data.get("humor", 0),
+            "vulgarity": data.get("vulgarity", 0),
+            "pushing": data.get("pushing", 0),
+        }
         score_delta = (
             data.get("charm", 0)
             + data.get("respect", 0)
@@ -187,4 +197,4 @@ async def evaluate_message(user_id: int, text: str, llm_call) -> int:
     finally:
         await conn.close()
 
-    return new_stage
+    return new_stage, signals

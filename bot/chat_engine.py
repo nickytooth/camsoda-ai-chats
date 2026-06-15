@@ -6,6 +6,7 @@ Processes messages for both Sexting and Story modes.
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 
 from bot.persona import Persona, load_persona
@@ -15,8 +16,10 @@ from bot.memory.summarizer import maybe_summarize, maybe_compact
 from bot.memory.facts import get_facts, format_facts_for_prompt
 from bot.prompt_builder import build_prompt
 from bot.router import classify
-from bot.engagement import track_message, should_soft_push, record_push
+from bot.engagement import track_message, should_soft_push, record_push, get_engagement_state
 from bot.intimacy import evaluate_message, get_stage
+from bot.mood import update_mood, get_mood
+from bot.time_context import get_time_period
 from bot.providers.base import LLMProvider
 from bot.config import STM_MAX_TURNS, NSFW_PERSONA_FILE, STORY_FILE
 from bot.memory.db import get_connection
@@ -31,6 +34,28 @@ class ChatResponse:
     content_urls: list[str] = field(default_factory=list)
 
 
+def _format_last_seen(gap_seconds: float) -> str | None:
+    """Human-friendly note about how long since the user last messaged."""
+    if gap_seconds < 1800:  # under 30 min — same conversation, say nothing
+        return None
+    if gap_seconds < 7200:
+        when = "about an hour"
+    elif gap_seconds < 21600:
+        when = "a few hours"
+    elif gap_seconds < 86400:
+        when = "most of the day"
+    elif gap_seconds < 172800:
+        when = "since yesterday"
+    else:
+        days = int(gap_seconds // 86400)
+        when = f"about {days} days"
+    return (
+        f"It's been {when} since you two last talked. "
+        "React to the gap naturally if it feels right — a little missed-him, "
+        "a little curious where he's been — but don't make it heavy."
+    )
+
+
 class ChatEngine:
     """Unified chat engine for both Story and Sexting modes."""
 
@@ -42,6 +67,7 @@ class ChatEngine:
         nsfw_provider: LLMProvider,
         classifier_provider: LLMProvider,
         vision_provider=None,
+        force_stage: int | None = None,
     ):
         self.persona = persona
         self.nsfw_persona = nsfw_persona
@@ -49,6 +75,9 @@ class ChatEngine:
         self.nsfw_provider = nsfw_provider
         self.classifier_provider = classifier_provider
         self.vision_provider = vision_provider
+        # When set (e.g. 3), skip the staged progression and treat every
+        # sexting message at this intimacy stage, routed through the NSFW provider.
+        self.force_stage = force_stage
 
         # Sexting mode batching
         self._pending: dict[int, list[str]] = {}
@@ -114,6 +143,124 @@ class ChatEngine:
             self._batch_tasks[user_id] = asyncio.create_task(
                 self._batch_collect(user_id, on_response)
             )
+
+    async def suggest_reply(self, user_id: int, mode: str = "sexting") -> str:
+        """
+        AI Help: write a suggested NEXT message for the USER to send — a reply
+        TO Victoria, in his voice. Used by the 'generate reply' button. The
+        suggestion is not stored; the user approves/edits it before sending.
+        """
+        stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
+        if not stm:
+            return ""
+
+        user_facts = await get_facts(user_id)
+        user_name = None
+        for f in (user_facts or []):
+            if f["key"] == "name":
+                user_name = f["value"]
+                break
+        him = user_name or "the man"
+
+        transcript_lines = []
+        for m in stm:
+            if m["role"] == "user":
+                transcript_lines.append(f"{him}: {m['content']}")
+            elif m["role"] == "assistant":
+                transcript_lines.append(f"Victoria: {m['content']}")
+        transcript = "\n".join(transcript_lines[-20:])
+
+        system = (
+            f"You are a flirting wingman helping a young man ({him}) who is sexting "
+            "with Victoria — an older, elegant, seductive woman who is his girlfriend's "
+            "mother. It is a consensual adult fantasy roleplay.\n\n"
+            "Write the SINGLE next message HE should send to her. Rules:\n"
+            "- First person, written TO Victoria, in his voice\n"
+            "- Short and natural, like a real text — one or two lines, no period at the end\n"
+            "- Confident, warm, playful; match her tone and gently escalate the flirtation\n"
+            "- React to what she JUST said — don't ignore it\n"
+            "- No quotation marks, no name labels, no emojis — output only the message text\n\n"
+            "Conversation so far:\n" + transcript
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "Write his next message now. Output only the message text."},
+        ]
+
+        provider = self.nsfw_provider or self.sfw_provider
+        try:
+            text = await provider.generate(messages)
+        except Exception as e:
+            logger.warning("Suggest-reply generation failed: %s", e)
+            return ""
+        return (text or "").strip().strip('"').strip()
+
+    async def generate_reengagement(self, user_id: int) -> ChatResponse:
+        """
+        Generate a spontaneous follow-up ("double-text") for a user who is
+        still online but has gone quiet. Sexting mode only. Returns an empty
+        ChatResponse if there's nothing to react to.
+        """
+        mode = "sexting"
+        stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
+        if not stm or not any(m["role"] == "user" for m in stm):
+            return ChatResponse()
+
+        stage = self.force_stage or await get_stage(user_id)
+        mood = await get_mood(user_id)
+        active_persona = (self.nsfw_persona or self.persona) if self.force_stage else self.persona
+        nudge_provider = self.nsfw_provider if self.force_stage else self.sfw_provider
+
+        user_facts = await get_facts(user_id)
+        facts_text = format_facts_for_prompt(user_facts)
+        user_name = None
+        for f in (user_facts or []):
+            if f["key"] == "name":
+                user_name = f["value"]
+                break
+
+        hint = (
+            "He's gone quiet for a little while and hasn't replied yet. "
+            "Send a short, natural follow-up to re-engage him — the way a real woman "
+            "double-texts: a playful nudge, a teasing line, a thought that just crossed "
+            "your mind, or a callback to what you were just talking about. Keep it light, "
+            "one or two short lines, fully in character. Do NOT ask 'are you there' like a "
+            "bot, and do NOT complain about waiting or being ignored."
+        )
+
+        prompt_messages = await build_prompt(
+            active_persona, [], stm,
+            mode=mode,
+            push_hint=hint,
+            user_name=user_name,
+            facts_text=facts_text,
+            intimacy_stage=stage,
+            mood=mood,
+            already_greeted=True,
+        )
+
+        # Reassemble so the message list starts AND ends with a user turn
+        # (Anthropic requires the first turn to be 'user'; ending on a user
+        # turn makes the model produce the follow-up).
+        system_msg = prompt_messages[0]
+        turns = [m for m in prompt_messages[1:] if m["role"] in ("user", "assistant")]
+        while turns and turns[0]["role"] == "assistant":
+            turns.pop(0)
+        turns.append({"role": "user", "content": "[He's been quiet for a bit.]"})
+        final_messages = [system_msg] + turns
+
+        try:
+            response_text = await nudge_provider.generate(final_messages)
+        except Exception as e:
+            logger.warning("Re-engagement generation failed: %s", e)
+            return ChatResponse()
+
+        if not response_text or not response_text.strip():
+            return ChatResponse()
+
+        await add_message(user_id, "assistant", response_text, mode=mode)
+        parts = self._split_response(response_text)
+        return ChatResponse(messages=parts)
 
     async def get_story_chapter(self, user_id: int) -> int:
         """Get current story chapter for user."""
@@ -266,7 +413,18 @@ class ChatEngine:
         await maybe_summarize(user_id, _llm_call)
         await maybe_compact(user_id, _llm_call)
 
+        # Capture how long since the user last messaged (before track_message
+        # overwrites last_message_at) so she can greet like a real person.
+        prev_state = await get_engagement_state(user_id)
+        last_seen_note = None
+        if prev_state and prev_state["last_message_at"]:
+            gap = time.time() - prev_state["last_message_at"]
+            last_seen_note = _format_last_seen(gap)
+
         stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
+        # She opens the conversation first, so if there's already an assistant
+        # turn she must continue the thread, not greet again.
+        already_greeted = any(m["role"] == "assistant" for m in stm)
         if not stm or not any(m["role"] == "user" for m in stm):
             stm = [{"role": "user", "content": text}]
 
@@ -274,16 +432,29 @@ class ChatEngine:
         classification = await classify(text, self.classifier_provider.generate_simple)
         await track_message(user_id, classification)
 
-        # Evaluate intimacy progression
-        intimacy_stage = await evaluate_message(user_id, text, _llm_call)
+        # Evaluate intimacy progression (returns stage + per-dimension signals)
+        intimacy_stage, signals = await evaluate_message(user_id, text, _llm_call)
+
+        # Single-persona "always open" mode: ignore the staged progression.
+        if self.force_stage:
+            intimacy_stage = self.force_stage
+
+        # Update short-term mood from the same signals (no extra LLM call)
+        await update_mood(user_id, signals, classification, intimacy_stage, get_time_period())
+        mood = await get_mood(user_id)
 
         # Pick provider and persona based on stage
-        # Stage 1-2: Always use SFW provider (Victoria deflects, doesn't reciprocate)
-        # Stage 3: Normal SFW/NSFW routing
-        if intimacy_stage >= 3 and classification == "nsfw":
+        if self.force_stage:
+            # Fully open from the start — everything runs through the NSFW
+            # provider with the single open persona.
+            provider = self.nsfw_provider
+            active_persona = self.nsfw_persona or self.persona
+        elif intimacy_stage >= 3 and classification == "nsfw":
+            # Stage 3: explicit content routes to the NSFW provider
             provider = self.nsfw_provider
             active_persona = self.nsfw_persona or self.persona
         else:
+            # Stage 1-2: SFW provider (Victoria deflects, doesn't reciprocate)
             provider = self.sfw_provider
             active_persona = self.persona
 
@@ -319,6 +490,9 @@ class ChatEngine:
             user_name=user_name,
             facts_text=facts_text,
             intimacy_stage=intimacy_stage,
+            mood=mood,
+            last_seen_note=last_seen_note,
+            already_greeted=already_greeted,
         )
 
         try:

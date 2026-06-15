@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from bot.config import (
     SERVER_HOST, SERVER_PORT, CONTENT_DIR, PERSONA_FILE, NSFW_PERSONA_FILE,
-    DEFAULT_USER_ID,
+    DEFAULT_USER_ID, USE_SINGLE_PERSONA, SINGLE_PERSONA_FILE, FORCE_STAGE,
 )
 from bot.memory.db import init_db, get_connection
 from bot.memory.stm import get_all_messages
@@ -48,9 +48,14 @@ async def lifespan(app: FastAPI):
     await init_db()
 
     logger.info("Loading personas...")
-    persona = load_persona()
-    nsfw_persona = load_persona(NSFW_PERSONA_FILE) if Path(NSFW_PERSONA_FILE).exists() else None
-    logger.info("Persona loaded: %s", persona.name)
+    if USE_SINGLE_PERSONA and Path(SINGLE_PERSONA_FILE).exists():
+        persona = load_persona(SINGLE_PERSONA_FILE)
+        nsfw_persona = persona  # one open persona drives everything
+        logger.info("Single-persona mode: %s (forced stage %s)", persona.name, FORCE_STAGE)
+    else:
+        persona = load_persona()
+        nsfw_persona = load_persona(NSFW_PERSONA_FILE) if Path(NSFW_PERSONA_FILE).exists() else None
+        logger.info("Persona loaded: %s", persona.name)
 
     logger.info("Initializing LLM providers...")
     sfw_provider = AnthropicProvider()
@@ -65,6 +70,7 @@ async def lifespan(app: FastAPI):
         nsfw_provider=nsfw_provider,
         classifier_provider=classifier_provider,
         vision_provider=vision_provider,
+        force_stage=FORCE_STAGE,
     )
     logger.info("Chat engine ready")
 
@@ -174,6 +180,20 @@ async def get_story_chapter(user_id: int = Query(default=None)):
     return {"chapter": chapter}
 
 
+@app.post("/api/suggest")
+async def suggest_reply(user_id: int = Query(default=None), mode: str = Query(default="sexting")):
+    """AI Help — generate a suggested reply for the user to send to Victoria."""
+    if not engine:
+        return JSONResponse({"error": "Engine not ready"}, status_code=503)
+    uid = user_id or DEFAULT_USER_ID
+    try:
+        suggestion = await engine.suggest_reply(uid, mode=mode)
+    except Exception as e:
+        logger.warning("Suggest endpoint failed: %s", e)
+        suggestion = ""
+    return {"suggestion": suggestion}
+
+
 @app.post("/api/reset")
 async def reset_user(user_id: int = Query(default=None)):
     """Wipe all data for a user — messages, memories, intimacy, story progress, facts, engagement."""
@@ -219,6 +239,65 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+# ------------------------------------------------------------------
+# Online-only re-engagement ("double-text" when the user goes quiet
+# while still connected). No offline queue, no cron for absent users.
+# ------------------------------------------------------------------
+
+IDLE_NUDGE_MIN_SECONDS = 45
+IDLE_NUDGE_MAX_SECONDS = 90
+MAX_CONSECUTIVE_NUDGES = 2
+
+idle_tasks: dict[int, asyncio.Task] = {}
+nudge_counts: dict[int, int] = {}
+
+
+def _cancel_idle(user_id: int):
+    """Cancel any pending idle-nudge task for a user."""
+    task = idle_tasks.pop(user_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+def _schedule_idle_nudge(user_id: int):
+    """(Re)start the idle-nudge countdown for a user."""
+    _cancel_idle(user_id)
+    idle_tasks[user_id] = asyncio.create_task(_idle_nudge_worker(user_id))
+
+
+async def _idle_nudge_worker(user_id: int):
+    """After a quiet gap (still online), send a spontaneous follow-up."""
+    import random
+    try:
+        await asyncio.sleep(random.uniform(IDLE_NUDGE_MIN_SECONDS, IDLE_NUDGE_MAX_SECONDS))
+
+        if user_id not in manager.active or not engine:
+            return
+        if nudge_counts.get(user_id, 0) >= MAX_CONSECUTIVE_NUDGES:
+            return
+
+        response = await engine.generate_reengagement(user_id)
+        # User may have come back (and cancelled us) while generating.
+        if not response.messages or user_id not in manager.active:
+            return
+
+        nudge_counts[user_id] = nudge_counts.get(user_id, 0) + 1
+        await _send_response_with_typing(user_id, response, mode="sexting")
+        try:
+            from bot.engagement import record_reengage
+            await record_reengage(user_id)
+        except Exception:
+            pass
+
+        # Allow one more nudge later if we're still under the cap.
+        if nudge_counts.get(user_id, 0) < MAX_CONSECUTIVE_NUDGES:
+            _schedule_idle_nudge(user_id)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.warning("Idle nudge failed for user %d: %s", user_id, e)
 
 
 async def _send_response_with_typing(user_id: int, response: ChatResponse, mode: str):
@@ -298,6 +377,11 @@ async def websocket_chat(ws: WebSocket, user_id: int = Query(default=None), user
             if not text and not image_bytes:
                 continue
 
+            # User is active again — cancel any pending idle nudge and reset
+            # the consecutive-nudge counter so she can nudge again later.
+            _cancel_idle(user_id)
+            nudge_counts[user_id] = 0
+
             logger.info("WS message from user %d [%s]: %s", user_id, mode, (text or "[image]")[:80])
 
             if mode == "story":
@@ -308,15 +392,21 @@ async def websocket_chat(ws: WebSocket, user_id: int = Query(default=None), user
                 # Sexting mode: batched processing
                 async def on_response(resp: ChatResponse):
                     await _send_response_with_typing(user_id, resp, mode="sexting")
+                    # Start the idle countdown once she's done replying.
+                    _schedule_idle_nudge(user_id)
 
                 await engine.process_sexting_batched(
                     user_id, text, image_bytes=image_bytes, on_response=on_response
                 )
 
     except WebSocketDisconnect:
+        _cancel_idle(user_id)
+        nudge_counts.pop(user_id, None)
         manager.disconnect(user_id)
     except Exception as e:
         logger.error("WebSocket error: %s", e, exc_info=True)
+        _cancel_idle(user_id)
+        nudge_counts.pop(user_id, None)
         manager.disconnect(user_id)
 
 

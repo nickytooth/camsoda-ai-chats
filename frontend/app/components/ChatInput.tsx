@@ -1,17 +1,34 @@
 "use client";
 
 import React, { useState, useRef } from "react";
-import { Send, Paperclip } from "lucide-react";
+import { Send, Paperclip, Sparkles, Loader2 } from "lucide-react";
 
 interface Props {
   onSend: (text: string, imageBase64?: string) => void;
+  onSuggest?: () => Promise<string>;
   disabled?: boolean;
   placeholder?: string;
 }
 
-export default function ChatInput({ onSend, disabled, placeholder }: Props) {
+export default function ChatInput({ onSend, onSuggest, disabled, placeholder }: Props) {
   const [text, setText] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleSuggest = async () => {
+    if (!onSuggest || suggesting || disabled) return;
+    setSuggesting(true);
+    try {
+      const suggestion = await onSuggest();
+      if (suggestion) {
+        setText(suggestion);
+        inputRef.current?.focus();
+      }
+    } finally {
+      setSuggesting(false);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,13 +80,31 @@ export default function ChatInput({ onSend, disabled, placeholder }: Props) {
         onChange={handleFile}
       />
 
+      {/* AI Help — draft a reply */}
+      {onSuggest && (
+        <button
+          type="button"
+          onClick={handleSuggest}
+          disabled={disabled || suggesting}
+          title="AI Help — draft a reply"
+          className="p-2 text-[var(--muted)] hover:text-[var(--accent)] transition-colors disabled:opacity-40"
+        >
+          {suggesting ? (
+            <Loader2 size={20} className="animate-spin" />
+          ) : (
+            <Sparkles size={20} />
+          )}
+        </button>
+      )}
+
       {/* Text input */}
       <input
+        ref={inputRef}
         type="text"
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder={placeholder || "Write a message..."}
+        placeholder={suggesting ? "Drafting a reply..." : placeholder || "Write a message..."}
         disabled={disabled}
         className="flex-1 bg-[#1a1a2e] text-[var(--foreground)] placeholder-[var(--muted)] rounded-xl px-4 py-2.5 text-[14px] outline-none focus:ring-1 focus:ring-[var(--accent)]/50 disabled:opacity-50"
       />

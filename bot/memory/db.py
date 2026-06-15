@@ -80,6 +80,13 @@ CREATE TABLE IF NOT EXISTS intimacy_state (
     last_evaluated_at REAL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS mood_state (
+    user_id INTEGER PRIMARY KEY,
+    mood TEXT NOT NULL DEFAULT 'warm',
+    intensity INTEGER NOT NULL DEFAULT 1,
+    updated_at REAL NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user_mode ON messages(user_id, mode);
 CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
