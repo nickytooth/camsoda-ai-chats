@@ -6,7 +6,12 @@ load_dotenv()
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATABASE_PATH = BASE_DIR / os.getenv("DATABASE_PATH", "data/bot.db")
+
+# PostgreSQL connection string. Railway injects DATABASE_URL automatically when a
+# Postgres service is attached; locally it defaults to a dev container.
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/victoria"
+)
 PERSONA_FILE = BASE_DIR / os.getenv("PERSONA_FILE", "personas/victoria.yaml")
 NSFW_PERSONA_FILE = BASE_DIR / os.getenv("NSFW_PERSONA_FILE", "personas/victoria_nsfw.yaml")
 
@@ -27,6 +32,10 @@ XAI_MODEL = os.getenv("XAI_MODEL", "grok-3")
 # Google / Gemini (classification + summarization)
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 GOOGLE_MODEL = os.getenv("GOOGLE_MODEL", "gemini-2.0-flash")
+# Used only as the sexting generator fallback when Grok fails — Gemini has its
+# safety filters disabled, so it can carry the explicit prompt that the SFW
+# (Anthropic) model would refuse.
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
 
 # OpenAI (embeddings only)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -39,8 +48,14 @@ SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 # Humanize timing (seconds)
 MIN_RESPONSE_DELAY = int(os.getenv("MIN_RESPONSE_DELAY", "3"))
 MAX_RESPONSE_DELAY = int(os.getenv("MAX_RESPONSE_DELAY", "10"))
+# Sexting batching is a debounce: she replies this many seconds after the
+# user's LAST message; every new message resets the countdown.
+SEXTING_DEBOUNCE_SECONDS = float(os.getenv("SEXTING_DEBOUNCE_SECONDS", "5"))
 
 # Memory settings
+# STM_MAX_TURNS counts USER turns (one user message = one turn). Once a user has
+# this many turns, the oldest messages are summarised into LTM. Note that
+# get_recent_messages fetches up to STM_MAX_TURNS * 2 rows (user + assistant).
 STM_MAX_TURNS = 18
 STM_SUMMARIZE_BATCH = 10
 LTM_TOP_K = 5

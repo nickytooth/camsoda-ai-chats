@@ -1,92 +1,85 @@
-import aiosqlite
-from pathlib import Path
-from bot.config import DATABASE_PATH
+"""
+PostgreSQL backend with a thin aiosqlite-compatible adapter.
+
+The rest of the codebase was written against aiosqlite's
+`conn = await get_connection(); cur = await conn.execute(sql, params);
+row = await cur.fetchone(); await conn.commit(); await conn.close()` pattern
+with `?` placeholders. To avoid rewriting every module, `get_connection()`
+returns a small adapter over an asyncpg pool connection that:
+  - rewrites `?` placeholders to `$1, $2, ...`
+  - runs fetch() for SELECTs (and RETURNING) and execute() otherwise
+  - exposes fetchone()/fetchall(), a no-op commit(), and close() (pool release)
+asyncpg Records support `row["col"]` access, so callers are unchanged.
+"""
+
+import asyncio
+import asyncpg
+
+from bot.config import DATABASE_URL
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
-    timestamp REAL NOT NULL,
+    timestamp DOUBLE PRECISION NOT NULL,
     mode TEXT NOT NULL DEFAULT 'sexting'
 );
-
 CREATE TABLE IF NOT EXISTS memories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
     category TEXT NOT NULL,
     content TEXT NOT NULL,
     importance INTEGER NOT NULL DEFAULT 5,
-    embedding BLOB,
-    created_at REAL NOT NULL,
-    last_accessed REAL
+    embedding BYTEA,
+    created_at DOUBLE PRECISION NOT NULL,
+    last_accessed DOUBLE PRECISION
 );
-
 CREATE TABLE IF NOT EXISTS sent_content (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
     content_id TEXT NOT NULL,
     category TEXT NOT NULL,
-    sent_at REAL NOT NULL,
+    sent_at DOUBLE PRECISION NOT NULL,
     paid INTEGER NOT NULL DEFAULT 0
 );
-
 CREATE TABLE IF NOT EXISTS pending_unlocks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
     content_id TEXT NOT NULL,
     category TEXT NOT NULL,
     star_price INTEGER NOT NULL,
-    created_at REAL NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL,
     unlocked INTEGER NOT NULL DEFAULT 0
 );
-
 CREATE TABLE IF NOT EXISTS user_facts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
     key TEXT NOT NULL,
     value TEXT NOT NULL,
-    confidence REAL NOT NULL DEFAULT 0.8,
-    first_seen REAL NOT NULL,
-    updated_at REAL NOT NULL
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 0.8,
+    first_seen DOUBLE PRECISION NOT NULL,
+    updated_at DOUBLE PRECISION NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS story_progress (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
     chapter INTEGER NOT NULL DEFAULT 1,
     scene INTEGER NOT NULL DEFAULT 0,
-    completed_at REAL,
+    completed_at DOUBLE PRECISION,
     chapter_score INTEGER NOT NULL DEFAULT 0,
     chapter_messages INTEGER NOT NULL DEFAULT 0
 );
-
 CREATE TABLE IF NOT EXISTS engagement_state (
-    user_id INTEGER PRIMARY KEY,
+    user_id BIGINT PRIMARY KEY,
     nsfw_count INTEGER NOT NULL DEFAULT 0,
     total_messages INTEGER NOT NULL DEFAULT 0,
-    last_push_at REAL DEFAULT 0,
-    last_selfie_at REAL DEFAULT 0,
-    last_message_at REAL DEFAULT 0,
-    last_reengage_at REAL DEFAULT 0
+    last_push_at DOUBLE PRECISION DEFAULT 0,
+    last_selfie_at DOUBLE PRECISION DEFAULT 0,
+    last_message_at DOUBLE PRECISION DEFAULT 0,
+    last_reengage_at DOUBLE PRECISION DEFAULT 0
 );
-
-CREATE TABLE IF NOT EXISTS intimacy_state (
-    user_id INTEGER PRIMARY KEY,
-    stage INTEGER NOT NULL DEFAULT 1,
-    flirt_score INTEGER NOT NULL DEFAULT 0,
-    message_count INTEGER NOT NULL DEFAULT 0,
-    last_evaluated_at REAL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS mood_state (
-    user_id INTEGER PRIMARY KEY,
-    mood TEXT NOT NULL DEFAULT 'warm',
-    intensity INTEGER NOT NULL DEFAULT 1,
-    updated_at REAL NOT NULL DEFAULT 0
-);
-
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user_mode ON messages(user_id, mode);
 CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
@@ -98,18 +91,76 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_user_facts_key ON user_facts(user_id, key)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_story_progress_user ON story_progress(user_id);
 """
 
+_pool: asyncpg.Pool | None = None
+_pool_lock = asyncio.Lock()
 
-async def get_connection() -> aiosqlite.Connection:
-    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = await aiosqlite.connect(str(DATABASE_PATH))
-    conn.row_factory = aiosqlite.Row
-    return conn
+
+def _convert_placeholders(sql: str) -> str:
+    """Rewrite aiosqlite-style `?` placeholders to asyncpg-style `$1, $2, ...`."""
+    out = []
+    n = 0
+    for ch in sql:
+        if ch == "?":
+            n += 1
+            out.append(f"${n}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+class _Cursor:
+    def __init__(self, rows: list):
+        self._rows = rows
+
+    async def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    async def fetchall(self):
+        return self._rows
+
+
+class _ConnAdapter:
+    """Mimics the slice of the aiosqlite.Connection API the codebase uses."""
+
+    def __init__(self, raw: asyncpg.Connection):
+        self._raw = raw
+
+    async def execute(self, sql: str, params=()):
+        query = _convert_placeholders(sql)
+        args = tuple(params) if params else ()
+        head = sql.lstrip()[:6].upper()
+        if head == "SELECT" or "RETURNING" in sql.upper():
+            rows = await self._raw.fetch(query, *args)
+            return _Cursor(list(rows))
+        await self._raw.execute(query, *args)
+        return _Cursor([])
+
+    async def commit(self):
+        # asyncpg autocommits outside an explicit transaction.
+        pass
+
+    async def close(self):
+        await _pool.release(self._raw)
+
+
+async def _get_pool() -> asyncpg.Pool:
+    global _pool
+    if _pool is None:
+        async with _pool_lock:
+            if _pool is None:
+                _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+    return _pool
+
+
+async def get_connection() -> _ConnAdapter:
+    pool = await _get_pool()
+    raw = await pool.acquire()
+    return _ConnAdapter(raw)
 
 
 async def init_db() -> None:
-    conn = await get_connection()
-    try:
-        await conn.executescript(SCHEMA)
-        await conn.commit()
-    finally:
-        await conn.close()
+    pool = await _get_pool()
+    statements = [s.strip() for s in SCHEMA.split(";") if s.strip()]
+    async with pool.acquire() as conn:
+        for stmt in statements:
+            await conn.execute(stmt)

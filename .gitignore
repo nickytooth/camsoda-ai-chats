@@ -1,5 +1,7 @@
 .env
 data/
+.claude/
+_*.py
 *.session
 __pycache__/
 *.pyc

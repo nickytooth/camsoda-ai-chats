@@ -1,5 +1,6 @@
 "use client";
 
+import ProfileGallery from "./ProfileGallery";
 import {
   Heart,
   User,
@@ -26,6 +27,7 @@ interface ProfileData {
 interface Props {
   name: string;
   tagline: string;
+  bio?: string;
   profile: ProfileData;
 }
 
@@ -44,17 +46,11 @@ const PROFILE_FIELDS: {
   { key: "personality", label: "PERSONALITY", icon: <Sparkles size={18} /> },
 ];
 
-export default function ProfileSidebar({ name, tagline, profile }: Props) {
+export default function ProfileSidebar({ name, tagline, bio, profile }: Props) {
   return (
     <aside className="w-[320px] flex-shrink-0 bg-[var(--sidebar-bg)] border-l border-[var(--border)] overflow-y-auto h-full">
-      {/* Profile photo */}
-      <div className="relative">
-        <div className="w-full aspect-[3/4] bg-gradient-to-b from-purple-900/40 to-black flex items-center justify-center">
-          <div className="w-32 h-32 rounded-full bg-gradient-to-br from-purple-600 to-pink-500 flex items-center justify-center text-4xl font-bold text-white">
-            V
-          </div>
-        </div>
-      </div>
+      {/* Profile media — video + photos carousel (arrows + dots) */}
+      <ProfileGallery />
 
       {/* Name + tagline */}
       <div className="px-5 pt-4 pb-3">
@@ -69,6 +65,19 @@ export default function ProfileSidebar({ name, tagline, profile }: Props) {
 
       {/* Divider */}
       <div className="mx-5 border-t border-[var(--border)]" />
+
+      {/* Bio */}
+      {bio && (
+        <>
+          <div className="px-5 pt-4 pb-1">
+            <h3 className="text-[13px] font-semibold text-[var(--muted)] mb-2">
+              Bio
+            </h3>
+            <p className="text-[13px] text-white/90 leading-relaxed">{bio}</p>
+          </div>
+          <div className="mx-5 mt-4 border-t border-[var(--border)]" />
+        </>
+      )}
 
       {/* About me */}
       <div className="px-5 pt-4 pb-6">

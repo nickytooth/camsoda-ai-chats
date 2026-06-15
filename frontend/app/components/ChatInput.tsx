@@ -1,40 +1,25 @@
 "use client";
 
-import React, { useState, useRef } from "react";
-import { Send, Paperclip, Sparkles, Loader2 } from "lucide-react";
+import React, { useRef } from "react";
+import { Send, Paperclip } from "lucide-react";
 
 interface Props {
+  value: string;
+  onChange: (text: string) => void;
   onSend: (text: string, imageBase64?: string) => void;
-  onSuggest?: () => Promise<string>;
   disabled?: boolean;
   placeholder?: string;
 }
 
-export default function ChatInput({ onSend, onSuggest, disabled, placeholder }: Props) {
-  const [text, setText] = useState("");
-  const [suggesting, setSuggesting] = useState(false);
+export default function ChatInput({ value, onChange, onSend, disabled, placeholder }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleSuggest = async () => {
-    if (!onSuggest || suggesting || disabled) return;
-    setSuggesting(true);
-    try {
-      const suggestion = await onSuggest();
-      if (suggestion) {
-        setText(suggestion);
-        inputRef.current?.focus();
-      }
-    } finally {
-      setSuggesting(false);
-    }
-  };
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!text.trim() || disabled) return;
-    onSend(text.trim());
-    setText("");
+    if (!value.trim() || disabled) return;
+    onSend(value.trim());
+    onChange("");
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -51,8 +36,8 @@ export default function ChatInput({ onSend, onSuggest, disabled, placeholder }: 
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = (reader.result as string).split(",")[1];
-      onSend(text.trim() || "", base64);
-      setText("");
+      onSend(value.trim() || "", base64);
+      onChange("");
     };
     reader.readAsDataURL(file);
     e.target.value = "";
@@ -80,31 +65,14 @@ export default function ChatInput({ onSend, onSuggest, disabled, placeholder }: 
         onChange={handleFile}
       />
 
-      {/* AI Help — draft a reply */}
-      {onSuggest && (
-        <button
-          type="button"
-          onClick={handleSuggest}
-          disabled={disabled || suggesting}
-          title="AI Help — draft a reply"
-          className="p-2 text-[var(--muted)] hover:text-[var(--accent)] transition-colors disabled:opacity-40"
-        >
-          {suggesting ? (
-            <Loader2 size={20} className="animate-spin" />
-          ) : (
-            <Sparkles size={20} />
-          )}
-        </button>
-      )}
-
       {/* Text input */}
       <input
         ref={inputRef}
         type="text"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder={suggesting ? "Drafting a reply..." : placeholder || "Write a message..."}
+        placeholder={placeholder || "Write a message..."}
         disabled={disabled}
         className="flex-1 bg-[#1a1a2e] text-[var(--foreground)] placeholder-[var(--muted)] rounded-xl px-4 py-2.5 text-[14px] outline-none focus:ring-1 focus:ring-[var(--accent)]/50 disabled:opacity-50"
       />
@@ -112,7 +80,7 @@ export default function ChatInput({ onSend, onSuggest, disabled, placeholder }: 
       {/* Send */}
       <button
         type="submit"
-        disabled={disabled || !text.trim()}
+        disabled={disabled || !value.trim()}
         className="p-2.5 bg-gradient-to-r from-purple-600 to-pink-500 rounded-xl text-white disabled:opacity-30 hover:opacity-90 transition-opacity"
       >
         <Send size={18} />

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from bot.config import (
     SERVER_HOST, SERVER_PORT, CONTENT_DIR,
-    DEFAULT_USER_ID, PERSONA_FILE_SEXTING,
+    DEFAULT_USER_ID, PERSONA_FILE_SEXTING, GEMINI_FALLBACK_MODEL,
 )
 from bot.memory.db import init_db, get_connection
 from bot.memory.stm import get_all_messages
@@ -56,6 +56,9 @@ async def lifespan(app: FastAPI):
     sfw_provider = AnthropicProvider()
     nsfw_provider = GrokProvider()
     classifier_provider = GeminiProvider()
+    # thinking_budget=0 → no "thinking" latency; this provider only writes short
+    # replies (suggestions + Grok fallback), so speed matters more than reasoning.
+    fallback_provider = GeminiProvider(GEMINI_FALLBACK_MODEL, thinking_budget=0)
     vision_provider = GrokProvider()
 
     engine = ChatEngine(
@@ -65,6 +68,7 @@ async def lifespan(app: FastAPI):
         nsfw_provider=nsfw_provider,
         classifier_provider=classifier_provider,
         vision_provider=vision_provider,
+        fallback_provider=fallback_provider,
     )
     logger.info("Chat engine ready")
 
@@ -240,9 +244,9 @@ manager = ConnectionManager()
 # while still connected). No offline queue, no cron for absent users.
 # ------------------------------------------------------------------
 
-IDLE_NUDGE_MIN_SECONDS = 45
-IDLE_NUDGE_MAX_SECONDS = 90
-MAX_CONSECUTIVE_NUDGES = 2
+IDLE_NUDGE_MIN_SECONDS = 120   # wait 2–4 min before a spontaneous follow-up
+IDLE_NUDGE_MAX_SECONDS = 240
+MAX_CONSECUTIVE_NUDGES = 1      # at most one nudge, then stay quiet until he writes
 
 idle_tasks: dict[int, asyncio.Task] = {}
 nudge_counts: dict[int, int] = {}
@@ -302,18 +306,24 @@ async def _send_response_with_typing(user_id: int, response: ChatResponse, mode:
     if not ws:
         return
 
+    # Nothing to say — make sure the (possibly already-running) typing indicator
+    # is cleared so it doesn't get stuck on.
+    if not response.messages and not response.content_urls:
+        await manager.send_json(user_id, {"type": "typing_end"})
+        return
+
     for i, msg in enumerate(response.messages):
         # Typing indicator
         await manager.send_json(user_id, {"type": "typing_start"})
 
-        # Typing delay scaled to message length
+        # Typing delay scaled to message length (kept short so she feels snappy)
         length = len(msg)
         if length < 50:
-            delay = random.uniform(1.0, 2.5)
+            delay = random.uniform(0.5, 1.1)
         elif length < 150:
-            delay = random.uniform(2.0, 4.0)
+            delay = random.uniform(0.9, 1.8)
         else:
-            delay = random.uniform(3.0, 6.0)
+            delay = random.uniform(1.5, 2.6)
 
         await asyncio.sleep(delay)
         await manager.send_json(user_id, {"type": "typing_end"})
@@ -329,7 +339,7 @@ async def _send_response_with_typing(user_id: int, response: ChatResponse, mode:
 
         # Brief pause between multi-bubble messages
         if i < len(response.messages) - 1:
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            await asyncio.sleep(random.uniform(0.3, 0.7))
 
     # Send content URLs if any
     for url in response.content_urls:
@@ -383,7 +393,11 @@ async def websocket_chat(ws: WebSocket, user_id: int = Query(default=None), user
                 response = await engine.process_message(user_id, text, mode="story", image_bytes=image_bytes)
                 await _send_response_with_typing(user_id, response, mode="story")
             else:
-                # Sexting mode: batched processing
+                # Sexting mode: batched processing. Start the typing indicator
+                # right away so she looks like she's already typing while the
+                # debounce window collects his messages.
+                await manager.send_json(user_id, {"type": "typing_start"})
+
                 async def on_response(resp: ChatResponse):
                     await _send_response_with_typing(user_id, resp, mode="sexting")
                     # Start the idle countdown once she's done replying.

@@ -17,8 +17,7 @@ from bot.memory.facts import get_facts, format_facts_for_prompt
 from bot.prompt_builder import build_prompt
 from bot.router import classify_fast
 from bot.engagement import track_message, should_soft_push, record_push, get_engagement_state
-from bot.intimacy import evaluate_message
-from bot.mood import update_mood, get_mood
+from bot.mood import mood_for_message, is_ai_question
 from bot.time_context import get_time_period
 from bot.providers.base import LLMProvider
 from bot.config import STM_MAX_TURNS, NSFW_PERSONA_FILE, STORY_FILE
@@ -67,6 +66,7 @@ class ChatEngine:
         nsfw_provider: LLMProvider,
         classifier_provider: LLMProvider,
         vision_provider=None,
+        fallback_provider: LLMProvider | None = None,
     ):
         self.persona = persona
         self.nsfw_persona = nsfw_persona
@@ -74,11 +74,14 @@ class ChatEngine:
         self.nsfw_provider = nsfw_provider
         self.classifier_provider = classifier_provider
         self.vision_provider = vision_provider
+        # Sexting generator fallback when Grok fails (Gemini 2.5 Flash by
+        # default). Falls back to the classifier provider if not supplied.
+        self.fallback_provider = fallback_provider or classifier_provider
 
-        # Sexting mode batching
+        # Sexting mode batching (debounce: reply N seconds after the LAST msg)
         self._pending: dict[int, list[str]] = {}
         self._batch_tasks: dict[int, asyncio.Task] = {}
-        self._batch_events: dict[int, asyncio.Event] = {}
+        self._last_activity: dict[int, float] = {}
         self._processing_lock: dict[int, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
@@ -134,6 +137,9 @@ class ChatEngine:
             self._pending[user_id] = []
         self._pending[user_id].append(text)
 
+        # Reset the debounce countdown on every message.
+        self._last_activity[user_id] = time.time()
+
         # Start batch task if none running
         if user_id not in self._batch_tasks or self._batch_tasks[user_id].done():
             self._batch_tasks[user_id] = asyncio.create_task(
@@ -183,12 +189,19 @@ class ChatEngine:
             {"role": "user", "content": "Write his next message now. Output only the message text."},
         ]
 
-        provider = self.nsfw_provider or self.sfw_provider
+        # The suggestion is a single short line, so latency matters more than
+        # heavyweight prose. Generate it on the fast Gemini 2.5 Flash model
+        # (the fallback provider) rather than the heavy Grok chat model, and
+        # fall back to Grok only on error.
         try:
-            text = await provider.generate(messages)
+            text = await self.fallback_provider.generate(messages)
         except Exception as e:
-            logger.warning("Suggest-reply generation failed: %s", e)
-            return ""
+            logger.warning("Suggest-reply fast generation failed: %s — retrying on Grok", e)
+            try:
+                text = await self.nsfw_provider.generate(messages)
+            except Exception as e2:
+                logger.warning("Suggest-reply generation failed: %s", e2)
+                return ""
         return (text or "").strip().strip('"').strip()
 
     async def generate_reengagement(self, user_id: int) -> ChatResponse:
@@ -202,7 +215,7 @@ class ChatEngine:
         if not stm or not any(m["role"] == "user" for m in stm):
             return ChatResponse()
 
-        mood = await get_mood(user_id)
+        mood = {"mood": "warm", "intensity": 1}
         active_persona = self.nsfw_persona or self.persona
         nudge_provider = self.nsfw_provider
 
@@ -215,12 +228,13 @@ class ChatEngine:
                 break
 
         hint = (
-            "He's gone quiet for a little while and hasn't replied yet. "
-            "Send a short, natural follow-up to re-engage him — the way a real woman "
-            "double-texts: a playful nudge, a teasing line, a thought that just crossed "
-            "your mind, or a callback to what you were just talking about. Keep it light, "
-            "one or two short lines, fully in character. Do NOT ask 'are you there' like a "
-            "bot, and do NOT complain about waiting or being ignored."
+            "He's gone quiet for a few minutes. Double-text him ONCE, the way a real "
+            "woman does when someone's still on her mind — pick up a SPECIFIC thread "
+            "from what you two were just saying, or share a vivid little thought or image "
+            "that just crossed your mind. Make it feel spontaneous and a touch seductive, "
+            "never needy. ONE short line only. Do NOT ask generic filler ('what are you "
+            "thinking', 'are you there', 'still there?'), do NOT recap, and do NOT complain "
+            "about waiting or being ignored."
         )
 
         prompt_messages = await build_prompt(
@@ -392,7 +406,8 @@ class ChatEngine:
             logger.warning("Chapter progression check failed: %s", e)
 
     # ------------------------------------------------------------------
-    # Sexting mode — batched, SFW/NSFW switch
+    # Sexting mode — batched; always Grok (no provider switch). The SFW/NSFW
+    # classification only feeds mood + engagement, it does not pick a model.
     # ------------------------------------------------------------------
 
     async def _process_sexting(self, user_id: int, text: str) -> ChatResponse:
@@ -416,24 +431,33 @@ class ChatEngine:
             last_seen_note = _format_last_seen(gap)
 
         stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
-        # She opens the conversation first, so if there's already an assistant
-        # turn she must continue the thread, not greet again.
-        already_greeted = any(m["role"] == "assistant" for m in stm)
+        # She opens the conversation first, so once there's been any prior
+        # activity she must continue the thread, not greet again. Derive this
+        # from durable engagement state as well as STM, because old STM turns
+        # get summarised away and would otherwise make her re-introduce herself.
+        had_prior_activity = bool(prev_state and prev_state["total_messages"])
+        already_greeted = had_prior_activity or any(m["role"] == "assistant" for m in stm)
         if not stm or not any(m["role"] == "user" for m in stm):
             stm = [{"role": "user", "content": text}]
 
-        # Score per-message emotional signals (also returns nsfw flag).
-        # This is a single Gemini call that doubles as the NSFW classifier.
-        signals = await evaluate_message(user_id, text, _llm_call)
-
-        # Classify SFW/NSFW: free keyword fast-path, else the signal eval's flag.
-        fast = classify_fast(text)
-        classification = fast or ("nsfw" if signals.get("nsfw") else "sfw")
+        # Classify SFW/NSFW with the instant keyword fast-path so engagement
+        # counting stays on the response's critical path without an LLM call.
+        classification = classify_fast(text) or "sfw"
         await track_message(user_id, classification)
 
-        # Update short-term mood from the signals (no extra LLM call)
-        await update_mood(user_id, signals, classification, get_time_period())
-        mood = await get_mood(user_id)
+        # Detect spam / pestering from recent history (cheap, no LLM): the same
+        # message repeated, or "are you an AI?" asked more than once.
+        recent_user = [m["content"].strip().lower() for m in stm if m["role"] == "user"][-6:]
+        # Spam = the SAME message sent back-to-back (consecutive), not just a
+        # phrase that happens to recur. Repeating a hot line is NOT spam.
+        repeated = len(recent_user) >= 2 and recent_user[-1] == recent_user[-2]
+        ai_question = is_ai_question(text)
+
+        # Mood is derived instantly from the current message — no LLM, no lag.
+        # AI-probing -> offended; spam -> irritated.
+        mood = mood_for_message(
+            text, classification, get_time_period(), repeated=repeated, ai_question=ai_question
+        )
 
         # Victoria is always fully open — everything runs through the NSFW
         # provider with the open persona.
@@ -445,14 +469,29 @@ class ChatEngine:
         if should_retrieve(user_id, text):
             ltm = await retrieve_relevant(user_id, text)
 
-        # Soft push hint
+        # Soft push hint — skip it when she's cool with him (a seductive photo
+        # tease would clash with an annoyed/distant mood). The counter is only
+        # reset *after* a reply is actually produced, so a failed generation
+        # doesn't silently burn the push.
         push_hint = None
-        if await should_soft_push(user_id):
+        will_push = False
+        if mood["mood"] not in ("annoyed", "distant", "irritated", "offended") and await should_soft_push(user_id):
             push_hint = (
                 "Naturally hint that you have private photos you could share — "
                 "be subtle, seductive, like it's a secret between you two."
             )
-            await record_push(user_id)
+            will_push = True
+
+        # AI-identity probing → reinforce a graceful, slightly-offended, in-character
+        # deflection (this takes precedence over the photo hint for this reply).
+        if ai_question:
+            will_push = False
+            push_hint = (
+                "He's questioning whether you're real or an AI. It stings a little — answer "
+                "with cool dignity and a flicker of wounded pride (a touch offended he'd even "
+                "ask), brush it off without over-explaining, and NEVER admit being anything "
+                "but a real woman or break character."
+            )
 
         # Facts
         user_facts = await get_facts(user_id)
@@ -479,18 +518,24 @@ class ChatEngine:
         try:
             response_text = await provider.generate(prompt_messages)
         except Exception as e:
-            logger.warning("Primary provider failed: %s — falling back", e)
-            fallback = self.nsfw_provider if provider is self.sfw_provider else self.sfw_provider
+            # Grok is the only sexting generator; fall back to the dedicated
+            # Gemini 2.5 Flash provider rather than the SFW model, which would
+            # refuse the explicit prompt.
+            logger.warning("Grok provider failed: %s — falling back to Gemini", e)
             try:
-                response_text = await fallback.generate(prompt_messages)
+                response_text = await self.fallback_provider.generate(prompt_messages)
             except Exception as e2:
-                logger.error("Fallback also failed: %s", e2)
+                logger.error("Fallback provider also failed: %s", e2)
                 return ChatResponse(messages=["..."])
 
         if not response_text or not response_text.strip():
             return ChatResponse()
 
         await add_message(user_id, "assistant", response_text, mode=mode)
+
+        # Only now that a reply genuinely went out do we spend the soft push.
+        if will_push:
+            await record_push(user_id)
 
         parts = self._split_response(response_text)
         return ChatResponse(messages=parts)
@@ -500,14 +545,20 @@ class ChatEngine:
     # ------------------------------------------------------------------
 
     async def _batch_collect(self, user_id: int, on_response=None) -> None:
-        """Wait for collect window, then process all accumulated messages."""
-        import random
-        from bot.config import MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY
+        """Debounce: wait until the user has been quiet for SEXTING_DEBOUNCE_SECONDS
+        (every new message resets the countdown), then process the batch."""
+        from bot.config import SEXTING_DEBOUNCE_SECONDS
 
-        delay = random.uniform(MIN_RESPONSE_DELAY, MAX_RESPONSE_DELAY)
-        delay = min(delay, 15.0)  # Cap at 15s for web
-        logger.info("Batch collect: %.1fs for user %d", delay, user_id)
-        await asyncio.sleep(delay)
+        # Sleep just long enough to reach `debounce` seconds after the LAST
+        # message; if a new message arrived meanwhile it pushed _last_activity
+        # forward, so we loop and wait out the remainder.
+        while True:
+            last = self._last_activity.get(user_id, 0.0)
+            remaining = SEXTING_DEBOUNCE_SECONDS - (time.time() - last)
+            if remaining <= 0:
+                break
+            await asyncio.sleep(remaining)
+        logger.info("Batch debounce elapsed (%.1fs quiet) for user %d", SEXTING_DEBOUNCE_SECONDS, user_id)
 
         texts = self._pending.pop(user_id, [])
         if not texts:
@@ -544,9 +595,27 @@ class ChatEngine:
     # Helpers
     # ------------------------------------------------------------------
 
+    MAX_BUBBLES = 3
+
     @staticmethod
     def _split_response(text: str) -> list[str]:
-        """Split response into multiple message bubbles."""
+        """Split a model reply into 1..MAX_BUBBLES chat bubbles."""
         text = text.replace("\u2014", "-").replace("\u2013", "-")
         parts = [p.strip() for p in text.split("\n") if p.strip()]
-        return parts if parts else [text.strip()]
+
+        # One unbroken block of prose \u2014 break it into sentence-ish chunks so it
+        # still reads like quick texts instead of one wall of text.
+        if len(parts) <= 1 and len(text.strip()) > 160:
+            sentences = re.split(r"(?<=[.!?\u2026])\s+", text.strip())
+            parts = [s.strip() for s in sentences if s.strip()]
+
+        if not parts:
+            return [text.strip()]
+
+        # Cap the bubble count; fold any overflow into the final bubble so the
+        # model never spams more than MAX_BUBBLES separate messages.
+        if len(parts) > ChatEngine.MAX_BUBBLES:
+            head = parts[: ChatEngine.MAX_BUBBLES - 1]
+            tail = " ".join(parts[ChatEngine.MAX_BUBBLES - 1:])
+            parts = head + [tail]
+        return parts

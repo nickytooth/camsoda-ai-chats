@@ -13,8 +13,11 @@ def _get_client() -> genai.Client:
 
 
 class GeminiProvider(LLMProvider):
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None, thinking_budget: int | None = None):
         self._model = model or GOOGLE_MODEL
+        # thinking_budget=0 disables Gemini "thinking" — much lower latency for
+        # short generations. Leave None to keep the model's default behaviour.
+        self._thinking_budget = thinking_budget
 
     async def generate(self, messages: list[dict]) -> str:
         client = _get_client()
@@ -31,6 +34,10 @@ class GeminiProvider(LLMProvider):
         config = genai.types.GenerateContentConfig(
             system_instruction=system_msg if system_msg else None,
             max_output_tokens=1024,
+            thinking_config=(
+                genai.types.ThinkingConfig(thinking_budget=self._thinking_budget)
+                if self._thinking_budget is not None else None
+            ),
             safety_settings=[
                 genai.types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"),
                 genai.types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),

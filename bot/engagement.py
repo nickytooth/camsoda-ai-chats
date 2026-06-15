@@ -1,19 +1,18 @@
 """
-Engagement tracking for soft-push content selling and unprompted selfies.
+Engagement tracking for soft-push content selling.
 
-Tracks NSFW message count per user and decides when Aishha should
-hint at content or send a free selfie to build rapport.
+Tracks NSFW message count per user and decides when Victoria should
+hint at content to build rapport.
 """
 
-import random
 import logging
 import time
 from bot.memory.db import get_connection
 
 logger = logging.getLogger(__name__)
 
-SOFT_PUSH_THRESHOLD = 8   # flirty messages before hinting
-SELFIE_PROBABILITY = 0.20  # 20% chance after threshold
+SOFT_PUSH_THRESHOLD = 8        # nsfw messages before hinting
+SOFT_PUSH_COOLDOWN = 1800      # min seconds between two soft-push hints (30 min)
 
 
 async def _ensure_table():
@@ -57,7 +56,7 @@ async def track_message(user_id: int, classification: str) -> None:
 
 
 async def should_soft_push(user_id: int) -> bool:
-    """Check if we should inject a content hint into Aishha's next response."""
+    """Check if we should inject a content hint into Victoria's next response."""
     await _ensure_table()
     conn = await get_connection()
     try:
@@ -72,12 +71,13 @@ async def should_soft_push(user_id: int) -> bool:
         nsfw_count = row["nsfw_count"]
         last_push = row["last_push_at"] or 0
 
-        # Need at least SOFT_PUSH_THRESHOLD nsfw messages since last push
+        # Need at least SOFT_PUSH_THRESHOLD nsfw messages since the last push.
+        # (record_push resets nsfw_count to 0, so this also enforces "since last".)
         if nsfw_count < SOFT_PUSH_THRESHOLD:
             return False
 
-        # Don't push if we pushed recently (within last 8 messages tracked via count reset)
-        if last_push > 0 and nsfw_count < SOFT_PUSH_THRESHOLD:
+        # Time-based cooldown so two hints never land back-to-back.
+        if last_push > 0 and (time.time() - last_push) < SOFT_PUSH_COOLDOWN:
             return False
 
         return True
@@ -94,44 +94,6 @@ async def record_push(user_id: int) -> None:
             (time.time(), user_id),
         )
         await conn.commit()
-    finally:
-        await conn.close()
-
-
-async def should_send_selfie(user_id: int) -> bool:
-    """Check if we should send an unprompted free selfie (probability-based)."""
-    await _ensure_table()
-    conn = await get_connection()
-    try:
-        cursor = await conn.execute(
-            "SELECT total_messages, last_selfie_at FROM engagement_state WHERE user_id = ?",
-            (user_id,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return False
-
-        # Need at least 8 total messages for rapport
-        if row["total_messages"] < 8:
-            return False
-
-        # Max 1 selfie per 4 hours
-        last_selfie = row["last_selfie_at"] or 0
-        if time.time() - last_selfie < 14400:
-            return False
-
-        # Probability gate
-        if random.random() > SELFIE_PROBABILITY:
-            return False
-
-        # Record selfie send
-        await conn.execute(
-            "UPDATE engagement_state SET last_selfie_at = ? WHERE user_id = ?",
-            (time.time(), user_id),
-        )
-        await conn.commit()
-        logger.info("Sending unprompted selfie to user %d", user_id)
-        return True
     finally:
         await conn.close()
 

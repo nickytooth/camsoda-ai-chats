@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { API_BASE, WS_BASE } from "../api";
 
 export interface ChatMessage {
   id: string;
@@ -16,7 +17,7 @@ interface UseChatOptions {
   userName?: string;
 }
 
-export function useChat({ wsUrl = "ws://localhost:8000/ws/chat", userId = 1, userName = "" }: UseChatOptions = {}) {
+export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "" }: UseChatOptions = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const [mode, setMode] = useState<"sexting" | "story">("sexting");
@@ -32,7 +33,7 @@ export function useChat({ wsUrl = "ws://localhost:8000/ws/chat", userId = 1, use
   // Load history for current mode
   const loadHistory = useCallback(async (m: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/history/${m}?user_id=${userId}`);
+      const res = await fetch(`${API_BASE}/api/history/${m}?user_id=${userId}`);
       if (!res.ok) return;
       const data = await res.json();
       const loaded: ChatMessage[] = (data.messages || []).map((msg: any) => ({
@@ -177,7 +178,7 @@ export function useChat({ wsUrl = "ws://localhost:8000/ws/chat", userId = 1, use
   const suggestReply = useCallback(async (): Promise<string> => {
     try {
       const res = await fetch(
-        `http://localhost:8000/api/suggest?user_id=${userId}&mode=${mode}`,
+        `${API_BASE}/api/suggest?user_id=${userId}&mode=${mode}`,
         { method: "POST" }
       );
       if (!res.ok) return "";

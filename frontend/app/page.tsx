@@ -4,16 +4,40 @@ import { useEffect, useRef, useState } from "react";
 import { useChat } from "./hooks/useChat";
 import ChatBubble from "./components/ChatBubble";
 import ChatInput from "./components/ChatInput";
+import StarterCards from "./components/StarterCards";
 import TypingIndicator from "./components/TypingIndicator";
 import ModeToggle from "./components/ModeToggle";
 import ProfileSidebar from "./components/ProfileSidebar";
 import NameScreen from "./components/NameScreen";
+import { API_BASE } from "./api";
 import { Circle } from "lucide-react";
+
+// Canned messages sent AS the user when a starter card is clicked. One is
+// picked at random so it doesn't read identically every time.
+const STARTER_MESSAGES: Record<string, string[]> = {
+  fantasy: [
+    "tell me one of your fantasies",
+    "what's a fantasy you can't stop thinking about?",
+    "I want to hear one of your fantasies",
+  ],
+  story: [
+    "tell me a story from your past",
+    "tell me about something wild you've done",
+    "I want to hear a story about you",
+  ],
+  lead: [
+    "take the lead tonight... I'm all yours",
+    "I want you to take the lead",
+    "show me what you want",
+  ],
+};
 
 const PROFILE = {
   name: "Victoria Donovan",
   tagline:
-    "Your girlfriend's mother. Elegant, forbidden, and she knows exactly what she's doing.",
+    "Your girlfriend's mother — elegant, married, and quietly starving. She knows it's wrong. That's the best part.",
+  bio:
+    "Texas-born, Miami-made. By day she closes eight-figure waterfront deals; by night she pours a glass of red in a house that's gone quiet. Twenty years married to a man who stopped seeing her — and she's done pretending she doesn't want more. That what she wants is so forbidden? That's exactly the thrill.",
   profile: {
     age: "42",
     body: "Athletic",
@@ -61,7 +85,7 @@ export default function Home() {
   const handleReset = async () => {
     if (!userName) return;
     try {
-      await fetch(`http://localhost:8000/api/reset?user_id=${userId}`, { method: "POST" });
+      await fetch(`${API_BASE}/api/reset?user_id=${userId}`, { method: "POST" });
     } catch (e) {}
     localStorage.removeItem("victoria_user");
     setUserName(null);
@@ -87,6 +111,22 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
   } = useChat({ userId, userName });
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [draft, setDraft] = useState("");
+
+  // Topic cards send a natural-looking message AS the user, then she replies to
+  // it through the normal flow — so the chat shows a prompt she's responding to.
+  const handleStarter = (topic: string) => {
+    const opts = STARTER_MESSAGES[topic];
+    if (!opts || opts.length === 0) return;
+    const msg = opts[Math.floor(Math.random() * opts.length)];
+    sendMessage(msg);
+  };
+
+  // "Draft my reply" card — fetch an AI suggestion and drop it in the input box.
+  const handleDraft = async () => {
+    const suggestion = await suggestReply();
+    if (suggestion) setDraft(suggestion);
+  };
 
   // Auto-scroll on new messages / typing
   useEffect(() => {
@@ -160,10 +200,20 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
           {isTyping && <TypingIndicator />}
         </div>
 
+        {/* Conversation-starter cards (Sexting only) */}
+        {mode === "sexting" && (
+          <StarterCards
+            onStarter={handleStarter}
+            onDraft={handleDraft}
+            disabled={inputDisabled || isTyping}
+          />
+        )}
+
         {/* Input */}
         <ChatInput
+          value={draft}
+          onChange={setDraft}
           onSend={sendMessage}
-          onSuggest={suggestReply}
           disabled={inputDisabled}
           placeholder={
             inputDisabled
@@ -179,6 +229,7 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
       <ProfileSidebar
         name={PROFILE.name}
         tagline={PROFILE.tagline}
+        bio={PROFILE.bio}
         profile={PROFILE.profile}
       />
     </div>
