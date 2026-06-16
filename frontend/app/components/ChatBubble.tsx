@@ -32,10 +32,12 @@ interface Props {
 
 export default function ChatBubble({ message, isStory }: Props) {
   const isUser = message.role === "user";
-  const isImage = message.content.startsWith("[image:");
+  // A persisted upload (imageUrl, from history) or a live preview bubble whose
+  // content is an [image:...] marker — both render as an image.
+  const isImage = !!message.imageUrl || message.content.startsWith("[image:");
 
   if (isImage) {
-    const url = message.content.slice(7, -1);
+    const url = message.imageUrl ?? message.content.slice(7, -1);
     return (
       <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3 px-4`}>
         <div className="max-w-[320px]">

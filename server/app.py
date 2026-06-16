@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from bot.config import (
-    SERVER_HOST, SERVER_PORT, CONTENT_DIR,
+    SERVER_HOST, SERVER_PORT, CONTENT_DIR, UPLOADS_DIR,
     DEFAULT_USER_ID, PERSONA_FILE_SEXTING, GEMINI_FALLBACK_MODEL,
 )
 from bot.memory.db import init_db, get_connection
@@ -91,6 +91,11 @@ app.add_middleware(
 if Path(CONTENT_DIR).exists():
     app.mount("/content", StaticFiles(directory=str(CONTENT_DIR)), name="content")
 
+# Serve user-uploaded photos (created on first upload; ensure it exists so the
+# mount succeeds even before the first photo is sent).
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+
 
 # ------------------------------------------------------------------
 # REST endpoints
@@ -161,6 +166,7 @@ async def get_history(mode: str, user_id: int = Query(default=None)):
                 "role": m["role"],
                 "content": m["content"],
                 "timestamp": m["timestamp"],
+                "image_url": m.get("image_url"),
             }
             for m in messages
             if m["role"] in ("user", "assistant")

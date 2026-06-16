@@ -53,6 +53,7 @@ async def build_prompt(
     mood: dict | None = None,
     last_seen_note: str | None = None,
     already_greeted: bool = False,
+    photo_hint: str | None = None,
 ) -> list[dict]:
     system_parts = [persona.to_system_prompt()]
 
@@ -82,9 +83,11 @@ async def build_prompt(
             "- But NEVER reply with bare one-word or robotic fragments ('what is it', "
             "'speak', 'i'm listening', 'careful'). She's expressive and seductive — every "
             "line carries warmth, wit, or heat, even when short.\n"
-            "- Send 1 to 3 short messages. Put each on its OWN line (newline between them) "
-            "so they arrive as separate bubbles — split by distinct thought, not by sentence. "
-            "Never send more than 3 bubbles.\n"
+            "- Vary how many messages you send — real texting isn't uniform. MOST replies are "
+            "just 1 or 2 short messages; send 3 only when you genuinely have separate thoughts. "
+            "Never pad a reply to hit three, and never send more than 3. Put each message on its "
+            "OWN line (newline between them) so they arrive as separate bubbles — split by distinct "
+            "thought, not by sentence.\n"
             "- Stay elegant and witty — she's sophisticated — but casual, the way people actually text.\n"
             "- No slang ('u', 'lol'), no emojis unless rare and deliberate."
         )
@@ -160,6 +163,12 @@ async def build_prompt(
     # Soft-push hint (injected by engagement system)
     if push_hint:
         system_parts.append(f"IMPORTANT FOR THIS REPLY: {push_hint}")
+
+    # Photo reaction — placed LAST so it carries the most weight when he just
+    # sent a picture. Overrides the persona's pervasive "young man" fixation so
+    # she never rejects or criticizes how he actually looks.
+    if photo_hint:
+        system_parts.append(photo_hint)
 
     system_text = "\n\n".join(system_parts)
 

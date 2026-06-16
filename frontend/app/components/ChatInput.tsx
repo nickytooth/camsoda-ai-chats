@@ -35,8 +35,9 @@ export default function ChatInput({ value, onChange, onSend, disabled, placehold
 
     const reader = new FileReader();
     reader.onload = () => {
-      const base64 = (reader.result as string).split(",")[1];
-      onSend(value.trim() || "", base64);
+      // Pass the full data URL (keeps the real mime type) so the UI can render
+      // a preview; useChat strips the prefix back to raw base64 for the backend.
+      onSend(value.trim() || "", reader.result as string);
       onChange("");
     };
     reader.readAsDataURL(file);

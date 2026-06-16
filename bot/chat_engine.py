@@ -7,6 +7,7 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 
 from bot.persona import Persona, load_persona
@@ -20,10 +21,36 @@ from bot.engagement import track_message, should_soft_push, record_push, get_eng
 from bot.mood import mood_for_message, is_ai_question
 from bot.time_context import get_time_period
 from bot.providers.base import LLMProvider
-from bot.config import STM_MAX_TURNS, NSFW_PERSONA_FILE, STORY_FILE
+from bot.config import STM_MAX_TURNS, NSFW_PERSONA_FILE, STORY_FILE, UPLOADS_DIR
 from bot.memory.db import get_connection
 
 logger = logging.getLogger(__name__)
+
+
+def _image_ext(image_bytes: bytes) -> str:
+    """Sniff a sensible file extension from the image's magic bytes."""
+    if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if image_bytes[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if image_bytes[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+
+def _save_upload(image_bytes: bytes) -> str | None:
+    """Persist an uploaded image to disk and return its served URL path
+    (e.g. '/uploads/ab12.jpg'), or None if saving fails."""
+    try:
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        name = f"{uuid.uuid4().hex}{_image_ext(image_bytes)}"
+        (UPLOADS_DIR / name).write_bytes(image_bytes)
+        return f"/uploads/{name}"
+    except Exception as e:
+        logger.error("Failed to save uploaded image: %s", e)
+        return None
 
 
 @dataclass
@@ -96,7 +123,9 @@ class ChatEngine:
         image_bytes: bytes | None = None,
     ) -> ChatResponse:
         """Process a user message. Routes to correct mode pipeline."""
-        # If user sent a photo, analyze it first
+        # If user sent a photo, persist it (so it survives history reloads) and
+        # analyze it so she can react to its content.
+        image_url = _save_upload(image_bytes) if image_bytes else None
         if image_bytes and self.vision_provider:
             try:
                 description = await self.vision_provider.analyze_image(image_bytes)
@@ -105,9 +134,9 @@ class ChatEngine:
                 logger.error("Vision analysis failed: %s", e)
 
         if mode == "story":
-            return await self._process_story(user_id, text)
+            return await self._process_story(user_id, text, image_url=image_url)
         else:
-            await add_message(user_id, "user", text, mode="sexting")
+            await add_message(user_id, "user", text, mode="sexting", image_url=image_url)
             return await self._process_sexting(user_id, text)
 
     async def process_sexting_batched(
@@ -122,6 +151,7 @@ class ChatEngine:
         accumulated messages are processed together.
         on_response: async callback(ChatResponse) called when batch is ready.
         """
+        image_url = _save_upload(image_bytes) if image_bytes else None
         if image_bytes and self.vision_provider:
             try:
                 description = await self.vision_provider.analyze_image(image_bytes)
@@ -131,7 +161,7 @@ class ChatEngine:
 
         # Persist immediately so history survives mode switches / disconnects,
         # even before the batch window flushes.
-        await add_message(user_id, "user", text, mode="sexting")
+        await add_message(user_id, "user", text, mode="sexting", image_url=image_url)
 
         if user_id not in self._pending:
             self._pending[user_id] = []
@@ -306,9 +336,9 @@ class ChatEngine:
     # Story mode — single message, Grok only
     # ------------------------------------------------------------------
 
-    async def _process_story(self, user_id: int, text: str) -> ChatResponse:
+    async def _process_story(self, user_id: int, text: str, image_url: str | None = None) -> ChatResponse:
         mode = "story"
-        await add_message(user_id, "user", text, mode=mode)
+        await add_message(user_id, "user", text, mode=mode, image_url=image_url)
 
         # Summarize if needed
         async def _llm_call(prompt: str) -> str:
@@ -503,6 +533,25 @@ class ChatEngine:
                 user_name = f["value"]
                 break
 
+        # He just sent a photo → strong, last-word instruction so she reacts with
+        # desire and never rejects how he actually looks (the persona's pervasive
+        # "young man" fixation otherwise makes her dismiss his real selfie).
+        photo_hint = None
+        if "[User sent a photo:" in text:
+            photo_hint = (
+                "IMPORTANT FOR THIS REPLY — HE JUST SENT YOU A PHOTO OF HIMSELF (the "
+                "description is in his message above). This IS him. React with genuine "
+                "desire and warm, specific compliments about what you actually see — his "
+                "face, his smile, his eyes, his build, the beard, whatever is there. You "
+                "find HIM attractive exactly as he is. Do NOT question whether it's really "
+                "him, do NOT say 'that's not you' or 'I wanted a picture of you', and do "
+                "NOT reject, criticize, or sound disappointed by his looks, age, or body. "
+                "Whatever his age or appearance, a real photo of him never disappoints you "
+                "— your 'young man' craving is a private feeling, NEVER a yardstick you "
+                "measure him against. ONLY if the image is obviously not a person at all "
+                "(a landscape, an object, a meme) may you tease lightly and ask for one of him."
+            )
+
         # Build and generate
         prompt_messages = await build_prompt(
             active_persona, ltm, stm,
@@ -513,6 +562,7 @@ class ChatEngine:
             mood=mood,
             last_seen_note=last_seen_note,
             already_greeted=already_greeted,
+            photo_hint=photo_hint,
         )
 
         try:

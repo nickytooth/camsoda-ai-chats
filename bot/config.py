@@ -21,6 +21,10 @@ STORY_FILE = BASE_DIR / os.getenv("STORY_FILE", "stories/victoria_story.yaml")
 CONTENT_CONFIG = BASE_DIR / os.getenv("CONTENT_CONFIG", "content_config.yaml")
 CONTENT_DIR = BASE_DIR / os.getenv("CONTENT_DIR", "content")
 
+# Where photos the USER uploads are stored on disk and served from (so they
+# survive a page reload / history refresh). Lives under data/ (gitignored).
+UPLOADS_DIR = BASE_DIR / os.getenv("UPLOADS_DIR", "data/uploads")
+
 # Anthropic (SFW)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")

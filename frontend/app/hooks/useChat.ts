@@ -9,6 +9,7 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   mode: "sexting" | "story";
+  imageUrl?: string;
 }
 
 interface UseChatOptions {
@@ -42,6 +43,13 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
         content: msg.content,
         timestamp: msg.timestamp,
         mode: m,
+        // Stored as a relative path ("/uploads/..") — make it absolute against
+        // the backend so the <img> resolves regardless of the frontend origin.
+        imageUrl: msg.image_url
+          ? msg.image_url.startsWith("http")
+            ? msg.image_url
+            : `${API_BASE}${msg.image_url}`
+          : undefined,
       }));
 
       // Fresh opening: Victoria initiated and the user hasn't replied yet
@@ -143,23 +151,41 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
 
   // Send message
   const sendMessage = useCallback(
-    (text: string, imageBase64?: string) => {
-      if (!text.trim() && !imageBase64) return;
+    (text: string, imageDataUrl?: string) => {
+      if (!text.trim() && !imageDataUrl) return;
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
-      // Add user message to UI immediately
-      const userMsg: ChatMessage = {
-        id: genId(),
-        role: "user",
-        content: text,
-        timestamp: Date.now() / 1000,
-        mode,
-      };
-      setMessages((prev) => [...prev, userMsg]);
+      const now = Date.now() / 1000;
+
+      // Show the user's messages immediately: the photo as its own image
+      // bubble (so it actually renders), plus a text bubble if there's text.
+      const newMsgs: ChatMessage[] = [];
+      if (imageDataUrl) {
+        newMsgs.push({
+          id: genId(),
+          role: "user",
+          content: `[image:${imageDataUrl}]`,
+          timestamp: now,
+          mode,
+        });
+      }
+      if (text.trim()) {
+        newMsgs.push({
+          id: genId(),
+          role: "user",
+          content: text,
+          timestamp: now,
+          mode,
+        });
+      }
+      setMessages((prev) => [...prev, ...newMsgs]);
 
       if (mode === "story") {
         setIsWaitingStory(true);
       }
+
+      // Backend expects raw base64 (no "data:...;base64," prefix) for vision.
+      const imageBase64 = imageDataUrl ? imageDataUrl.split(",")[1] : undefined;
 
       // Send via WebSocket
       wsRef.current.send(

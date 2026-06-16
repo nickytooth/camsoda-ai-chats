@@ -2,12 +2,19 @@ import time
 from bot.memory.db import get_connection
 
 
-async def add_message(user_id: int, role: str, content: str, mode: str = "sexting") -> None:
+async def add_message(
+    user_id: int,
+    role: str,
+    content: str,
+    mode: str = "sexting",
+    image_url: str | None = None,
+) -> None:
     conn = await get_connection()
     try:
         await conn.execute(
-            "INSERT INTO messages (user_id, role, content, timestamp, mode) VALUES (?, ?, ?, ?, ?)",
-            (user_id, role, content, time.time(), mode),
+            "INSERT INTO messages (user_id, role, content, timestamp, mode, image_url) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, role, content, time.time(), mode, image_url),
         )
         await conn.commit()
     finally:
@@ -96,13 +103,18 @@ async def get_all_messages(user_id: int, mode: str = "sexting") -> list[dict]:
     conn = await get_connection()
     try:
         cursor = await conn.execute(
-            "SELECT role, content, timestamp FROM messages "
+            "SELECT role, content, timestamp, image_url FROM messages "
             "WHERE user_id = ? AND mode = ? ORDER BY timestamp ASC, id ASC",
             (user_id, mode),
         )
         rows = await cursor.fetchall()
         return [
-            {"role": row["role"], "content": row["content"], "timestamp": row["timestamp"]}
+            {
+                "role": row["role"],
+                "content": row["content"],
+                "timestamp": row["timestamp"],
+                "image_url": row["image_url"],
+            }
             for row in rows
         ]
     finally:
