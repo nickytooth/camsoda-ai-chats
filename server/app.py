@@ -376,6 +376,23 @@ async def websocket_chat(ws: WebSocket, user_id: int = Query(default=None), user
             mode = data.get("mode", "sexting")
             text = data.get("content", "").strip()
 
+            # Card request (Hear a fantasy / Hear a story): pull from the library.
+            if msg_type == "card":
+                kind = data.get("kind", "")
+                if kind not in ("fantasy", "story"):
+                    continue
+                _cancel_idle(user_id)
+                nudge_counts[user_id] = 0
+                logger.info("WS card from user %d: %s", user_id, kind)
+                if text:
+                    from bot.memory.stm import add_message as stm_add
+                    await stm_add(user_id, "user", text, mode="sexting")
+                await manager.send_json(user_id, {"type": "typing_start"})
+                response = await engine.generate_card(user_id, kind)
+                await _send_response_with_typing(user_id, response, mode="sexting")
+                _schedule_idle_nudge(user_id)
+                continue
+
             # Handle image uploads via WebSocket (base64)
             image_bytes = None
             if data.get("image"):

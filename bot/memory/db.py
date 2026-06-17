@@ -81,6 +81,14 @@ CREATE TABLE IF NOT EXISTS engagement_state (
     last_message_at DOUBLE PRECISION DEFAULT 0,
     last_reengage_at DOUBLE PRECISION DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS shared_content (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    kind TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    shared_at DOUBLE PRECISION NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shared_content_uniq ON shared_content(user_id, kind, item_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user_mode ON messages(user_id, mode);
 CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);

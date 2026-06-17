@@ -108,18 +108,23 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
     sendMessage,
     switchMode,
     suggestReply,
+    triggerCard,
   } = useChat({ userId, userName });
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState("");
 
-  // Topic cards send a natural-looking message AS the user, then she replies to
-  // it through the normal flow — so the chat shows a prompt she's responding to.
+  // Cards show a natural-looking request AS the user, then she responds.
+  // Fantasy/story pull from the (non-repeating) library; "lead" is improvised.
   const handleStarter = (topic: string) => {
     const opts = STARTER_MESSAGES[topic];
     if (!opts || opts.length === 0) return;
     const msg = opts[Math.floor(Math.random() * opts.length)];
-    sendMessage(msg);
+    if (topic === "fantasy" || topic === "story") {
+      triggerCard(topic, msg);
+    } else {
+      sendMessage(msg);
+    }
   };
 
   // "Draft my reply" card — fetch an AI suggestion and drop it in the input box.

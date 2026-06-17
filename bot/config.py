@@ -18,6 +18,13 @@ NSFW_PERSONA_FILE = BASE_DIR / os.getenv("NSFW_PERSONA_FILE", "personas/victoria
 # Victoria is a single, always-open persona for all sexting.
 PERSONA_FILE_SEXTING = BASE_DIR / os.getenv("SINGLE_PERSONA_FILE", "personas/victoria1.yaml")
 STORY_FILE = BASE_DIR / os.getenv("STORY_FILE", "stories/victoria_story.yaml")
+
+# Authored libraries the "Hear a fantasy" / "Hear a story" cards draw from
+# (same for everyone, tracked-as-shared per user in the DB). In library/ so they
+# ship in git (unlike the gitignored content/).
+FANTASIES_FILE = BASE_DIR / os.getenv("FANTASIES_FILE", "library/fantasies.yaml")
+STORIES_FILE = BASE_DIR / os.getenv("STORIES_FILE", "library/stories.yaml")
+
 CONTENT_CONFIG = BASE_DIR / os.getenv("CONTENT_CONFIG", "content_config.yaml")
 CONTENT_DIR = BASE_DIR / os.getenv("CONTENT_DIR", "content")
 

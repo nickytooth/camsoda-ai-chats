@@ -19,6 +19,7 @@ from bot.prompt_builder import build_prompt
 from bot.router import classify_fast
 from bot.engagement import track_message, should_soft_push, record_push, get_engagement_state
 from bot.mood import mood_for_message, is_ai_question
+from bot.content_library import pick_unshared, mark_shared
 from bot.time_context import get_time_period
 from bot.providers.base import LLMProvider
 from bot.config import STM_MAX_TURNS, NSFW_PERSONA_FILE, STORY_FILE, UPLOADS_DIR
@@ -299,6 +300,96 @@ class ChatEngine:
         await add_message(user_id, "assistant", response_text, mode=mode)
         parts = self._split_response(response_text)
         return ChatResponse(messages=parts)
+
+    async def generate_card(self, user_id: int, kind: str) -> ChatResponse:
+        """Card-triggered fantasy/story. Pulls an unshared item from the library
+        (so she never repeats), and when the pool is exhausted she improvises a
+        fresh, personalised one. `kind` is 'fantasy' or 'story'."""
+        mode = "sexting"
+        item = await pick_unshared(user_id, kind)
+
+        if item:
+            if kind == "story":
+                hint = (
+                    "He just asked to hear a story from your past. Tell him THIS one, in "
+                    "your own voice, as about three MEATIER bubbles with real detail and "
+                    "heat (no trailing period, each bubble on its own line). Set the scene, "
+                    "build it, and finish on something that makes him ache. Don't quote it "
+                    "word for word — tell it like a confession spilling out of you:\n\n"
+                    f"{item['text'].strip()}"
+                )
+            else:
+                hint = (
+                    "He just asked to hear one of your fantasies. Tell him THIS one in your "
+                    "own voice, as a few short charged bubbles (no trailing period, each on "
+                    "its own line). Vivid and filthy but elegant. Don't quote it word for "
+                    "word — make it sound like it's spilling out of you right now:\n\n"
+                    f"{item['text'].strip()}"
+                )
+        else:
+            # Library exhausted for this user — improvise a fresh, personalised one.
+            if kind == "story":
+                hint = (
+                    "He asked for a story and you've already told him your best ones. Either "
+                    "invent a fresh vivid memory from your past, or warmly call back to one "
+                    "you've already told him ('I keep thinking about when I told you about...'). "
+                    "About three meatier bubbles, real heat and detail, no trailing period."
+                )
+            else:
+                hint = (
+                    "He asked for a fantasy and you've already shared your usual ones with him. "
+                    "Invent a NEW one, tailored to HIM and what you know he likes from your "
+                    "facts and memories about him. A few short charged bubbles, filthy but "
+                    "elegant, no trailing period."
+                )
+
+        stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
+        active_persona = self.nsfw_persona or self.persona
+        user_facts = await get_facts(user_id)
+        facts_text = format_facts_for_prompt(user_facts)
+        user_name = None
+        for f in (user_facts or []):
+            if f["key"] == "name":
+                user_name = f["value"]
+                break
+
+        prompt_messages = await build_prompt(
+            active_persona, [], stm,
+            mode=mode,
+            push_hint=hint,
+            user_name=user_name,
+            facts_text=facts_text,
+            mood={"mood": "aroused", "intensity": 3},
+            already_greeted=True,
+        )
+
+        system_msg = prompt_messages[0]
+        turns = [m for m in prompt_messages[1:] if m["role"] in ("user", "assistant")]
+        while turns and turns[0]["role"] == "assistant":
+            turns.pop(0)
+        turns.append({"role": "user", "content": "[Tell it to me now.]"})
+        final_messages = [system_msg] + turns
+
+        try:
+            response_text = await self.nsfw_provider.generate(final_messages)
+        except Exception as e:
+            logger.warning("Card (Grok) failed: %s — falling back to Gemini", e)
+            try:
+                response_text = await self.fallback_provider.generate(final_messages)
+            except Exception as e2:
+                logger.error("Card fallback also failed: %s", e2)
+                return ChatResponse()
+
+        if not response_text or not response_text.strip():
+            return ChatResponse()
+
+        await add_message(user_id, "assistant", response_text, mode=mode)
+        if item:
+            await mark_shared(user_id, kind, item["id"])
+            logger.info("Card %s '%s' delivered to user %d", kind, item["id"], user_id)
+        else:
+            logger.info("Card %s improvised (library exhausted) for user %d", kind, user_id)
+        return ChatResponse(messages=self._split_response(response_text))
 
     async def get_story_chapter(self, user_id: int) -> int:
         """Get current story chapter for user."""

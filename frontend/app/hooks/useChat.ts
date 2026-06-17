@@ -200,6 +200,21 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     [mode]
   );
 
+  // Card request (Hear a fantasy / Hear a story): show the user's request as a
+  // bubble, then ask the backend to pull a (non-repeating) item from the library.
+  const triggerCard = useCallback(
+    (kind: "fantasy" | "story", requestText: string) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      setMessages((prev) => [
+        ...prev,
+        { id: genId(), role: "user", content: requestText, timestamp: Date.now() / 1000, mode },
+      ]);
+      setIsTyping(true);
+      wsRef.current.send(JSON.stringify({ type: "card", kind, content: requestText, mode }));
+    },
+    [mode]
+  );
+
   // AI Help — ask the backend to draft a reply the user can approve/edit
   const suggestReply = useCallback(async (): Promise<string> => {
     try {
@@ -246,5 +261,6 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     sendMessage,
     switchMode,
     suggestReply,
+    triggerCard,
   };
 }

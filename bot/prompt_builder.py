@@ -135,7 +135,10 @@ async def build_prompt(
                 "Keep it rare so it stays special.\n"
                 "- Stay ON-TOPIC and natural — never recite memories as a list, never dump "
                 "them at random or bring one up out of nowhere. Let them rise only when they "
-                "genuinely belong to what you two are talking about."
+                "genuinely belong to what you two are talking about.\n"
+                "- Don't re-tell a story or fantasy you've already shared with him. If one "
+                "comes back up, reference it as a callback instead ('like I told you about...'), "
+                "never repeat it as if it's new."
             )
 
     # Time since you last spoke — lets her greet like a real person
