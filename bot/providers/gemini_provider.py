@@ -25,7 +25,9 @@ class GeminiProvider(LLMProvider):
         # the default filters would otherwise drop (empty response).
         return genai.types.GenerateContentConfig(
             system_instruction=system_msg if system_msg else None,
-            max_output_tokens=1024,
+            # Cap, not a forced length: short classifications stay short, but
+            # long summarization/compaction JSON won't get truncated mid-object.
+            max_output_tokens=2048,
             thinking_config=(
                 genai.types.ThinkingConfig(thinking_budget=self._thinking_budget)
                 if self._thinking_budget is not None else None

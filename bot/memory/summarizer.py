@@ -53,6 +53,28 @@ Entries:
 """
 
 
+def _extract_json(raw: str):
+    """Parse a JSON object/array from an LLM response.
+
+    Gemini (and others) often wrap JSON in markdown ```json ... ``` fences or
+    add stray prose around it, which makes a direct json.loads() fail. This
+    strips fences and, as a fallback, slices from the first opening bracket to
+    the last closing bracket before parsing. Mirrors the handling already used
+    in bot/story_progression.py.
+    """
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        # Drop the opening fence line (``` or ```json) and the closing fence.
+        text = text.split("\n", 1)[1] if "\n" in text else text
+        text = text.rsplit("```", 1)[0].strip()
+    if not (text.startswith("{") or text.startswith("[")):
+        starts = [i for i in (text.find("{"), text.find("[")) if i != -1]
+        end = max(text.rfind("}"), text.rfind("]"))
+        if starts and end > min(starts):
+            text = text[min(starts):end + 1]
+    return json.loads(text)
+
+
 def _format_messages_for_summary(messages: list[dict]) -> str:
     lines = []
     for msg in messages:
@@ -148,7 +170,7 @@ async def maybe_compact(user_id: int, llm_call) -> bool:
 
     try:
         raw_response = await llm_call(prompt)
-        new_entries = json.loads(raw_response)
+        new_entries = _extract_json(raw_response)
     except (json.JSONDecodeError, Exception) as e:
         logger.error("Compaction failed: %s", e)
         return False
