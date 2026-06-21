@@ -20,7 +20,7 @@ from bot.prompt_builder import build_prompt
 from bot.router import classify_fast
 from bot.engagement import track_message, should_soft_push, record_push, get_engagement_state
 from bot.mood import mood_for_message, is_ai_question
-from bot.content_library import pick_unshared, pick_from_library, mark_shared, get_examples
+from bot.content_library import pick_unshared, mark_shared, get_examples, library_size
 from bot.time_context import get_time_period, get_preferred_tags, get_scene
 from bot.photo_content import pick_current_location_photo
 from bot.providers.base import LLMProvider
@@ -496,16 +496,15 @@ class ChatEngine:
             return await self._deliver_dynamic_fantasy(user_id)
 
         mode = "sexting"
-        # Stories ALWAYS come from the authored library file (cycling through them,
-        # repeating once exhausted) — never improvised. When a library item's tags
-        # match her current location/context it is preferred; otherwise the
-        # sequential order stands.
-        item = await pick_from_library(user_id, kind, preferred_tags=get_preferred_tags())
+        # Stories come from the authored library, delivered VERBATIM and NEVER
+        # repeated: pick_unshared returns the next untold one, or None once she's
+        # told them all. We deliberately do NOT reset the rotation — see the
+        # exhausted branch below. Location-matching tags are preferred when present.
+        item = await pick_unshared(user_id, kind, preferred_tags=get_preferred_tags())
 
         # Library item found: deliver the authored text VERBATIM — one paragraph
-        # per bubble, exactly as written in the file. No LLM rewrite. A short,
-        # randomised lead-in bubble always comes first ("I don't know if I should
-        # tell you this, but....").
+        # per bubble, exactly as written. A short randomised lead-in opens it, and
+        # a reciprocity nudge always closes it (she wants to hear HIS stories too).
         if item:
             paras = [
                 " ".join(line.strip() for line in p.split("\n") if line.strip())
@@ -514,16 +513,23 @@ class ChatEngine:
             ]
             if not paras:
                 paras = self._repack_to_n(item["text"], 3)
-            paras = [self._card_lead_in(kind)] + paras
+            paras = [self._card_lead_in(kind)] + paras + [self._story_reciprocity_nudge()]
             await add_message(user_id, "assistant", "\n".join(paras), mode=mode)
             await mark_shared(user_id, kind, item["id"])
-            logger.info("Card %s '%s' delivered verbatim to user %d", kind, item["id"], user_id)
+            logger.info("Card story '%s' delivered verbatim to user %d", item["id"], user_id)
             return ChatResponse(messages=paras)
 
-        # SAFETY NET ONLY: this is reached solely when the authored library file
-        # is missing or empty (pick_from_library auto-resets the rotation, so a
-        # populated library ALWAYS returns an item above). In that edge case we
-        # improvise a fresh, personalised one rather than send nothing.
+        # No untold story left. If the library actually HAS stories, she's simply
+        # told him all of them — she says so and turns it back on him, asking for
+        # his. She keeps doing this on every later tap (we never recycle old ones).
+        if library_size(kind) > 0:
+            msg = self._story_exhausted_message()
+            await add_message(user_id, "assistant", "\n".join(msg), mode=mode)
+            logger.info("Card story exhausted for user %d — inviting his stories", user_id)
+            return ChatResponse(messages=msg)
+
+        # SAFETY NET ONLY: reached solely when the authored library file is missing
+        # or empty. In that edge case we improvise one rather than send nothing.
         logger.warning("Card story library empty/missing — improvising for user %d", user_id)
         hint = (
             "He asked for a story and you've already told him your best ones. Either "
@@ -572,10 +578,10 @@ class ChatEngine:
         if not response_text or not response_text.strip():
             return ChatResponse()
 
-        await add_message(user_id, "assistant", response_text, mode=mode)
         logger.info("Card story improvised (library empty) for user %d", user_id)
-        # Stories are always delivered as exactly 3 paced bubbles.
-        messages = self._repack_to_n(response_text, 3)
+        # Stories are delivered as 3 paced bubbles, closed by a reciprocity nudge.
+        messages = self._repack_to_n(response_text, 3) + [self._story_reciprocity_nudge()]
+        await add_message(user_id, "assistant", "\n".join(messages), mode=mode)
         return ChatResponse(messages=messages)
 
     async def get_story_chapter(self, user_id: int) -> int:
@@ -1004,11 +1010,37 @@ class ChatEngine:
         "I shouldn't want this as badly as I do, but....",
     ]
 
+    # Closes every story she tells — turns it back on him so he opens up too.
+    _STORY_RECIPROCITY_NUDGES = [
+        "Okay... now it's your turn. Tell me something you've never told anyone",
+        "I showed you mine 😏 now show me yours",
+        "Your turn, baby — what's the dirtiest thing you've actually done?",
+        "Now I want one of yours. Don't be shy with me",
+        "Mmm... your turn now. Tell me a little secret of yours",
+        "I've been spilling all mine — now you tell me one",
+    ]
+    # Said once she's told him every authored story (and on every later tap).
+    _STORY_EXHAUSTED = [
+        "Mmm that's basically all my dirty little secrets, baby...\nI've laid them all out for you. Now I want to hear yours 😏",
+        "Okay, you've heard every one of mine now... every confession I've got.\nYour turn — tell me one of yours, don't hold back",
+        "That's me completely laid bare, secret-wise... I'm all out of stories.\nNow I want yours 😈 tell me something filthy you've done",
+    ]
+
     @staticmethod
     def _card_lead_in(kind: str) -> str:
         """A short, randomised teaser bubble that always opens a card story/fantasy."""
         pool = ChatEngine._LEAD_INS_STORY if kind == "story" else ChatEngine._LEAD_INS_FANTASY
         return random.choice(pool)
+
+    @staticmethod
+    def _story_reciprocity_nudge() -> str:
+        """A randomised closing bubble inviting the user to share his own story."""
+        return random.choice(ChatEngine._STORY_RECIPROCITY_NUDGES)
+
+    @staticmethod
+    def _story_exhausted_message() -> list[str]:
+        """Bubbles for when she's out of authored stories and wants to hear his."""
+        return [b for b in random.choice(ChatEngine._STORY_EXHAUSTED).split("\n") if b]
 
     @staticmethod
     def _repack_to_n(text: str, n: int) -> list[str]:

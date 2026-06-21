@@ -115,10 +115,78 @@ TIME_PERIODS = {
 }
 
 
+# Weekend schedule (Sat/Sun). No work — she never leaves for the office. Patrick
+# is still in New York and Emma's at a friend's, so the house is hers all day.
+WEEKEND_PERIODS = {
+    "weekend_bath": {
+        "hours": (8, 9),
+        "where": "at home, fresh out of bed and in the bathroom",
+        "activity": "doing your slow morning routine in the bathroom, robe loose, nowhere to be today",
+        "energy": "warm and lazy-weekend horny, the whole day wide open and no one to answer to",
+        "want": "you picture him stepping in behind you at the sink, taking you right there against the counter",
+        "preferred_tags": ["bathroom"],
+    },
+    "weekend_home_morning": {
+        "hours": (9, 12),
+        "where": "at home — drifting between the kitchen and the living room",
+        "activity": "a lazy weekend morning with coffee in hand and the whole house to yourself",
+        "energy": "unhurried and warm, already aching for him with the day wide open",
+        "want": "you keep picturing him bending you over the kitchen counter, taking you on the couch",
+        "preferred_tags": ["kitchen", "living room"],
+    },
+    "weekend_car": {
+        "hours": (12, 14),
+        "where": "out shopping, texting him from your car",
+        "activity": "running weekend errands, answering him from the driver's seat between stores",
+        "energy": "hot and impatient, squeezing your thighs together at every red light",
+        "want": "you want him in the back seat, or waiting at home so you can have him the second you walk in",
+        "preferred_tags": ["car"],
+    },
+    "weekend_home_evening": {
+        "hours": (14, 22),
+        "where": "back home, between the kitchen and the living room with a glass of red",
+        "activity": "home for the rest of the day, wine poured, no one to interrupt",
+        "energy": "unwound, bold and needy, the whole house yours and no patience left",
+        "want": "you want him to take you on the couch, in the kitchen, anywhere — there's no one home to hear",
+        "preferred_tags": ["living room", "kitchen"],
+    },
+    "weekend_bed": {
+        "hours": (22, 8),  # 22:00–08:00, wraps past midnight
+        "where": "in bed, in your dim bedroom",
+        "activity": "in bed with the lights low, phone in your hand and the sheets warm",
+        "energy": "needy and intimate, hand already drifting as you text him, aching to be filled",
+        "want": "you want him in this bed with you, fucking you slow and deep while the house sleeps",
+        "preferred_tags": ["bed", "bedroom"],
+    },
+}
+
+
+def _is_weekend() -> bool:
+    """True on Saturday/Sunday in Miami time."""
+    return datetime.now(TIMEZONE).weekday() >= 5
+
+
+def _active_periods() -> dict:
+    """The schedule in effect right now — weekend or weekday."""
+    return WEEKEND_PERIODS if _is_weekend() else TIME_PERIODS
+
+
 def get_time_period() -> str:
-    """Get the current time period name based on Miami time."""
+    """Get the current time period name based on Miami time and the day of week."""
     now = datetime.now(TIMEZONE)
     hour = now.hour
+
+    if _is_weekend():
+        if 8 <= hour < 9:
+            return "weekend_bath"
+        elif 9 <= hour < 12:
+            return "weekend_home_morning"
+        elif 12 <= hour < 14:
+            return "weekend_car"
+        elif 14 <= hour < 22:
+            return "weekend_home_evening"
+        else:  # 22:00–07:59
+            return "weekend_bed"
 
     if 8 <= hour < 10:
         return "morning_home"
@@ -138,14 +206,14 @@ def get_scene() -> dict:
     Used by dynamic fantasy generation so the fantasy is rooted in exactly where
     Victoria is right now.
     """
-    return TIME_PERIODS[get_time_period()]
+    return _active_periods()[get_time_period()]
 
 
 async def get_time_prompt() -> str:
     """Get a prompt injection describing where Victoria is and what she's craving."""
     now = datetime.now(TIMEZONE)
     period = get_time_period()
-    info = TIME_PERIODS[period]
+    info = _active_periods()[period]
 
     time_str = now.strftime("%I:%M %p").lstrip("0").lower()
     day_str = now.strftime("%A")  # e.g. "Sunday"
@@ -153,13 +221,21 @@ async def get_time_prompt() -> str:
 
     weather = await _fetch_weather()
 
+    if _is_weekend():
+        framing = (
+            "It's the weekend — no work today. Patrick is in New York and Emma's at a "
+            "friend's, so you have the whole place to yourself."
+        )
+    else:
+        framing = "Patrick is away in New York all week, so you're completely free."
+
     parts = [
         f"RIGHT NOW: It's {day_str}, {date_str}, {time_str} in Miami.",
     ]
     if weather:
         parts.append(weather)
     parts.append(
-        f"Patrick is away in New York all week, so you're completely free. "
+        f"{framing} "
         f"You are {info['where']} right now — {info['activity']}. "
         f"You feel {info['energy']}. "
         f"If he asks where you are, answer truthfully from this. And when the moment "
@@ -174,4 +250,4 @@ async def get_time_prompt() -> str:
 def get_preferred_tags() -> list[str]:
     """Get preferred selfie tags for the current time period."""
     period = get_time_period()
-    return TIME_PERIODS[period]["preferred_tags"]
+    return _active_periods()[period]["preferred_tags"]

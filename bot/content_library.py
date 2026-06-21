@@ -55,6 +55,12 @@ def get_examples(kind: str, n: int = 2) -> list[str]:
     return [it["text"].strip() for it in items if it.get("text")][:n]
 
 
+def library_size(kind: str) -> int:
+    """How many authored items exist for this kind. Lets callers tell an
+    EXHAUSTED rotation (all shared) apart from an EMPTY/missing library file."""
+    return len(_load(kind))
+
+
 async def _shared_ids(user_id: int, kind: str) -> set[str]:
     conn = await get_connection()
     try:
