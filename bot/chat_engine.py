@@ -20,8 +20,8 @@ from bot.prompt_builder import build_prompt
 from bot.router import classify_fast
 from bot.engagement import track_message, should_soft_push, record_push, get_engagement_state
 from bot.mood import mood_for_message, is_ai_question
-from bot.content_library import pick_unshared, pick_from_library, mark_shared
-from bot.time_context import get_time_period, get_preferred_tags
+from bot.content_library import pick_unshared, pick_from_library, mark_shared, get_examples
+from bot.time_context import get_time_period, get_preferred_tags, get_scene
 from bot.photo_content import pick_current_location_photo
 from bot.providers.base import LLMProvider
 from bot.config import STM_MAX_TURNS, STORY_FILE, UPLOADS_DIR
@@ -84,6 +84,51 @@ def _save_upload(image_bytes: bytes) -> str | None:
     except Exception as e:
         logger.error("Failed to save uploaded image: %s", e)
         return None
+
+
+# Dynamic fantasies are generated fresh each time, so there is no library id to
+# track. To avoid circling the same idea we remember a short "theme" (the first
+# sentence) of the last few we sent and tell the model to avoid them.
+DYN_FANTASY_CATEGORY = "dyn_fantasy_theme"
+MAX_RECENT_FANTASY_THEMES = 8
+
+
+def _fantasy_theme(text: str) -> str:
+    """First sentence of a generated fantasy, truncated — used to avoid repeats."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return ""
+    first = re.split(r"(?<=[.!?\u2026])\s+", stripped)[0]
+    return first[:120]
+
+
+async def _recent_fantasy_themes(user_id: int) -> list[str]:
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT content_id FROM sent_content WHERE user_id = ? AND category = ? "
+            "ORDER BY sent_at DESC LIMIT ?",
+            (user_id, DYN_FANTASY_CATEGORY, MAX_RECENT_FANTASY_THEMES),
+        )
+        rows = await cursor.fetchall()
+        return [row["content_id"] for row in rows if row["content_id"]]
+    finally:
+        await conn.close()
+
+
+async def _record_fantasy_theme(user_id: int, theme: str) -> None:
+    if not theme:
+        return
+    conn = await get_connection()
+    try:
+        await conn.execute(
+            "INSERT INTO sent_content (user_id, content_id, category, sent_at, paid) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (user_id, theme, DYN_FANTASY_CATEGORY, time.time()),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
 
 
 @dataclass
@@ -337,15 +382,124 @@ class ChatEngine:
         parts = self._split_response(response_text)
         return ChatResponse(messages=parts)
 
-    async def generate_card(self, user_id: int, kind: str) -> ChatResponse:
-        """Card-triggered fantasy/story. Pulls an unshared item from the library
-        (so she never repeats), and when the pool is exhausted she improvises a
-        fresh, personalised one. `kind` is 'fantasy' or 'story'."""
+    async def _deliver_dynamic_fantasy(self, user_id: int) -> ChatResponse:
+        """Generate a fresh fantasy rooted in Victoria's current location and
+        tailored to the user from his facts + LTM + recent chat.
+
+        The authored fantasies in library/fantasies.yaml are used only as STYLE
+        exemplars (length/rhythm/tone) — never sent verbatim. A short randomised
+        lead-in bubble opens it and the body is paced into exactly three bubbles,
+        matching the existing card feel. Recently-sent themes are passed back to
+        the model so it doesn't circle the same idea.
+        """
         mode = "sexting"
-        # Stories AND fantasies must ALWAYS come from the authored library files
-        # (cycling through them, repeating once exhausted) — never improvised from
-        # persona memories. When a library item's tags match her current
-        # location/context it is preferred; otherwise the sequential order stands.
+        active_persona = self.nsfw_persona or self.persona
+
+        user_facts = await get_facts(user_id)
+        facts_text = format_facts_for_prompt(user_facts)
+        user_name = None
+        kink_bits: list[str] = []
+        for f in (user_facts or []):
+            if f["key"] == "name":
+                user_name = f["value"]
+            if f["key"] in ("kinks", "turn_ons", "fetishes", "interests"):
+                kink_bits.append(f["value"])
+
+        stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
+
+        # LTM — query from what we know he likes, else his most recent message.
+        query = ", ".join(b for b in kink_bits if b).strip()
+        if not query:
+            for m in reversed(stm):
+                if m.get("role") == "user" and m.get("content"):
+                    query = m["content"]
+                    break
+        ltm = await retrieve_relevant(user_id, query) if query else []
+
+        scene = get_scene()
+        examples = get_examples("fantasy", 2)
+        recent_themes = await _recent_fantasy_themes(user_id)
+
+        example_block = "\n".join(f"<style_example>\n{ex}\n</style_example>" for ex in examples)
+        avoid_block = ""
+        if recent_themes:
+            bullets = "\n".join(f"- {t}" for t in recent_themes)
+            avoid_block = (
+                "\nYou've recently shared these with him — choose a DIFFERENT angle, "
+                f"don't repeat them:\n{bullets}\n"
+            )
+
+        hint = (
+            "He just tapped 'Hear a fantasy'. Invent ONE brand-new fantasy and tell it to him now.\n"
+            f"SETTING: it happens right where you are at this moment — {scene['where']}. "
+            "Make the place vivid and specific; the fantasy is rooted HERE.\n"
+            "MAKE IT HIS: weave in what you know he likes from the facts and memories above "
+            "(his kinks, his turn-ons, things he's told you). It should feel written for him, "
+            "not generic.\n"
+            "STYLE: match the examples below EXACTLY in length, rhythm and tone — do NOT reuse "
+            "their content or setting, only their style:\n"
+            f"{example_block}\n"
+            "FORMAT: about three short, charged bubbles, explicit but elegant, in your texting "
+            "voice, no trailing period on the last line."
+            f"{avoid_block}"
+        )
+
+        prompt_messages = await build_prompt(
+            active_persona, ltm, stm,
+            mode=mode,
+            push_hint=hint,
+            user_name=user_name,
+            facts_text=facts_text,
+            mood={"mood": "aroused", "intensity": 3},
+            already_greeted=True,
+        )
+
+        system_msg = prompt_messages[0]
+        turns = [m for m in prompt_messages[1:] if m["role"] in ("user", "assistant")]
+        while turns and turns[0]["role"] == "assistant":
+            turns.pop(0)
+        turns.append({"role": "user", "content": "[Tell me a fantasy right now.]"})
+        final_messages = [system_msg] + turns
+
+        try:
+            response_text = await self.nsfw_provider.generate(final_messages)
+        except Exception as e:
+            logger.warning("Dynamic fantasy (Grok) failed: %s — falling back to Gemini", e)
+            try:
+                response_text = await self.fallback_provider.generate(final_messages)
+            except Exception as e2:
+                logger.error("Dynamic fantasy fallback also failed: %s", e2)
+                return ChatResponse()
+
+        if not response_text or not response_text.strip():
+            return ChatResponse()
+
+        paras = [self._card_lead_in("fantasy")] + self._repack_to_n(response_text, 3)
+        await add_message(user_id, "assistant", "\n".join(paras), mode=mode)
+        await _record_fantasy_theme(user_id, _fantasy_theme(response_text))
+        logger.info(
+            "Fantasy generated (dynamic) for user %d — location=%s",
+            user_id, scene.get("preferred_tags"),
+        )
+        return ChatResponse(messages=paras)
+
+    async def generate_card(self, user_id: int, kind: str) -> ChatResponse:
+        """Card-triggered fantasy/story.
+
+        - 'fantasy': ALWAYS generated fresh, rooted in Victoria's current location
+          and tailored to the user from his facts + LTM + recent chat (the authored
+          library serves only as a style exemplar). See `_deliver_dynamic_fantasy`.
+        - 'story': pulled verbatim from the authored library (so she never repeats),
+          improvising only as a safety net when the library is missing/empty.
+        """
+        if kind == "fantasy":
+            return await self._deliver_dynamic_fantasy(user_id)
+
+        mode = "sexting"
+        # Stories ALWAYS come from the authored library file (cycling through them,
+        # repeating once exhausted) — never improvised. When a library item's tags
+        # match her current location/context it is preferred; otherwise the
+        # sequential order stands.
         item = await pick_from_library(user_id, kind, preferred_tags=get_preferred_tags())
 
         # Library item found: deliver the authored text VERBATIM — one paragraph
@@ -370,21 +524,13 @@ class ChatEngine:
         # is missing or empty (pick_from_library auto-resets the rotation, so a
         # populated library ALWAYS returns an item above). In that edge case we
         # improvise a fresh, personalised one rather than send nothing.
-        logger.warning("Card %s library empty/missing — improvising for user %d", kind, user_id)
-        if kind == "story":
-            hint = (
-                "He asked for a story and you've already told him your best ones. Either "
-                "invent a fresh vivid memory from your past, or warmly call back to one "
-                "you've already told him ('I keep thinking about when I told you about...'). "
-                "About three meatier bubbles, real heat and detail, no trailing period."
-            )
-        else:
-            hint = (
-                "He asked for a fantasy and you've already shared your usual ones with him. "
-                "Invent a NEW one, tailored to HIM and what you know he likes from your "
-                "facts and memories about him. A few short charged bubbles, filthy but "
-                "elegant, no trailing period."
-            )
+        logger.warning("Card story library empty/missing — improvising for user %d", user_id)
+        hint = (
+            "He asked for a story and you've already told him your best ones. Either "
+            "invent a fresh vivid memory from your past, or warmly call back to one "
+            "you've already told him ('I keep thinking about when I told you about...'). "
+            "About three meatier bubbles, real heat and detail, no trailing period."
+        )
 
         stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
         active_persona = self.nsfw_persona or self.persona
@@ -427,8 +573,8 @@ class ChatEngine:
             return ChatResponse()
 
         await add_message(user_id, "assistant", response_text, mode=mode)
-        logger.info("Card %s improvised (library empty) for user %d", kind, user_id)
-        # Stories and fantasies are always delivered as exactly 3 paced bubbles.
+        logger.info("Card story improvised (library empty) for user %d", user_id)
+        # Stories are always delivered as exactly 3 paced bubbles.
         messages = self._repack_to_n(response_text, 3)
         return ChatResponse(messages=messages)
 

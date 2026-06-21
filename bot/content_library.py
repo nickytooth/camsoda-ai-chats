@@ -44,6 +44,17 @@ def _load(kind: str) -> list[dict]:
     return items
 
 
+def get_examples(kind: str, n: int = 2) -> list[str]:
+    """Return up to `n` authored item texts to use as STYLE few-shot examples.
+
+    Used by dynamic generation (e.g. location/LTM-aware fantasies) so freshly
+    generated content matches the authored length, rhythm and tone without being
+    sent verbatim.
+    """
+    items = _load(kind)
+    return [it["text"].strip() for it in items if it.get("text")][:n]
+
+
 async def _shared_ids(user_id: int, kind: str) -> set[str]:
     conn = await get_connection()
     try:

@@ -132,6 +132,15 @@ def get_time_period() -> str:
         return "bedroom_night"
 
 
+def get_scene() -> dict:
+    """The current period's scene info (where / activity / want / preferred_tags).
+
+    Used by dynamic fantasy generation so the fantasy is rooted in exactly where
+    Victoria is right now.
+    """
+    return TIME_PERIODS[get_time_period()]
+
+
 async def get_time_prompt() -> str:
     """Get a prompt injection describing where Victoria is and what she's craving."""
     now = datetime.now(TIMEZONE)
