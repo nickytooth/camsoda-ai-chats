@@ -10,6 +10,17 @@ export interface ChatMessage {
   timestamp: number;
   mode: "sexting" | "story";
   imageUrl?: string;
+  // Pay-to-see selfies: `locked` blurs the image until unlocked, `cost` is the
+  // token price, `photoUrl` is the relative /content path used for the unlock call.
+  locked?: boolean;
+  cost?: number;
+  photoUrl?: string;
+}
+
+export interface UnlockResult {
+  ok: boolean;
+  balance: number;
+  error?: string;
 }
 
 interface UseChatOptions {
@@ -24,6 +35,7 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
   const [mode, setMode] = useState<"sexting" | "story">("sexting");
   const [isConnected, setIsConnected] = useState(false);
   const [isWaitingStory, setIsWaitingStory] = useState(false);
+  const [balance, setBalance] = useState<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<NodeJS.Timeout | null>(null);
   const idCounter = useRef(0);
@@ -50,6 +62,9 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
             ? msg.image_url
             : `${API_BASE}${msg.image_url}`
           : undefined,
+        locked: msg.locked,
+        cost: msg.cost,
+        photoUrl: msg.image_url,
       }));
 
       // Fresh opening: Victoria initiated and the user hasn't replied yet
@@ -133,6 +148,9 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
             content: `[image:${imageUrl}]`,
             timestamp: data.timestamp || Date.now() / 1000,
             mode: data.mode || "sexting",
+            locked: data.locked,
+            cost: data.cost,
+            photoUrl: data.photo_url || data.url,
           };
           setMessages((prev) => [...prev, imgMsg]);
           break;
@@ -232,6 +250,60 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     }
   }, [userId, mode]);
 
+  // Token balance — fetched on mount/user change and refreshed after spend/top-up.
+  const refreshBalance = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/tokens?user_id=${userId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setBalance(data.balance ?? null);
+    } catch (e) {
+      console.error("Balance fetch failed:", e);
+    }
+  }, [userId]);
+
+  // Spend tokens to reveal a blurred selfie. On success, flips that message to
+  // unlocked and updates the balance. Returns the result so the caller can show
+  // a "not enough tokens" hint on 402.
+  const unlockPhoto = useCallback(
+    async (photoUrl: string, messageId: string): Promise<UnlockResult> => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/unlock?user_id=${userId}&photo_url=${encodeURIComponent(photoUrl)}`,
+          { method: "POST" }
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          if (typeof data.balance === "number") setBalance(data.balance);
+          return { ok: false, balance: data.balance ?? 0, error: data.error || "Unlock failed" };
+        }
+        setBalance(data.balance ?? null);
+        setMessages((prev) =>
+          prev.map((m) => (m.id === messageId ? { ...m, locked: false } : m))
+        );
+        return { ok: true, balance: data.balance ?? 0 };
+      } catch (e) {
+        console.error("Unlock failed:", e);
+        return { ok: false, balance: 0, error: "Network error" };
+      }
+    },
+    [userId]
+  );
+
+  // Demo "Get more" — grant a fresh batch of tokens.
+  const topUp = useCallback(async (): Promise<void> => {
+    try {
+      const res = await fetch(`${API_BASE}/api/tokens/topup?user_id=${userId}`, {
+        method: "POST",
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setBalance(data.balance ?? null);
+    } catch (e) {
+      console.error("Top-up failed:", e);
+    }
+  }, [userId]);
+
   // Switch mode
   const switchMode = useCallback(
     (newMode: "sexting" | "story") => {
@@ -250,12 +322,13 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
   useEffect(() => {
     connect();
     loadHistory(mode);
+    refreshBalance();
     return () => {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connect, loadHistory]);
+  }, [connect, loadHistory, refreshBalance]);
 
   return {
     messages,
@@ -263,9 +336,12 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     isConnected,
     mode,
     isWaitingStory,
+    balance,
     sendMessage,
     switchMode,
     suggestReply,
     triggerCard,
+    unlockPhoto,
+    topUp,
   };
 }

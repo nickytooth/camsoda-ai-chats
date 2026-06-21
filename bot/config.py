@@ -25,6 +25,13 @@ STORIES_FILE = BASE_DIR / os.getenv("STORIES_FILE", "library/stories.yaml")
 
 CONTENT_DIR = BASE_DIR / os.getenv("CONTENT_DIR", "content")
 
+# Token economy (pay-to-see photos). New users start with STARTING_TOKENS and
+# pay PHOTO_UNLOCK_COST to reveal each of Victoria's blurred selfies. TOPUP_AMOUNT
+# is the demo "Get more" grant.
+STARTING_TOKENS = int(os.getenv("STARTING_TOKENS", "1000"))
+PHOTO_UNLOCK_COST = int(os.getenv("PHOTO_UNLOCK_COST", "10"))
+TOPUP_AMOUNT = int(os.getenv("TOPUP_AMOUNT", "1000"))
+
 # Where photos the USER uploads are stored on disk and served from (so they
 # survive a page reload / history refresh). Lives under data/ (gitignored).
 UPLOADS_DIR = BASE_DIR / os.getenv("UPLOADS_DIR", "data/uploads")

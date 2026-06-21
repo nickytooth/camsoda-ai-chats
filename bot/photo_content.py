@@ -119,6 +119,42 @@ async def _reset_sent(user_id: int, urls: set[str]) -> None:
         await conn.close()
 
 
+async def is_photo_unlocked(user_id: int, url: str) -> bool:
+    """True if this user has already paid to reveal this photo."""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT 1 FROM sent_content WHERE user_id = ? AND category = ? "
+            "AND content_id = ? AND paid = 1 LIMIT 1",
+            (user_id, CATEGORY, url),
+        )
+        return await cursor.fetchone() is not None
+    finally:
+        await conn.close()
+
+
+async def mark_photo_unlocked(user_id: int, url: str) -> None:
+    """Flag this photo as paid for this user (revealing it permanently). Inserts
+    a row if the photo wasn't tracked as sent yet."""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "UPDATE sent_content SET paid = 1 WHERE user_id = ? AND category = ? "
+            "AND content_id = ? RETURNING id",
+            (user_id, CATEGORY, url),
+        )
+        updated = await cursor.fetchone()
+        if not updated:
+            await conn.execute(
+                "INSERT INTO sent_content (user_id, content_id, category, sent_at, paid) "
+                "VALUES (?, ?, ?, ?, 1)",
+                (user_id, url, CATEGORY, time.time()),
+            )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+
 async def pick_current_location_photo(user_id: int) -> str | None:
     photos = _eligible_photos()
     if not photos:

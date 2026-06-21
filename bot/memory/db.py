@@ -79,6 +79,10 @@ CREATE TABLE IF NOT EXISTS shared_content (
     item_id TEXT NOT NULL,
     shared_at DOUBLE PRECISION NOT NULL
 );
+CREATE TABLE IF NOT EXISTS user_tokens (
+    user_id BIGINT PRIMARY KEY,
+    balance INTEGER NOT NULL DEFAULT 1000
+);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_shared_content_uniq ON shared_content(user_id, kind, item_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user_mode ON messages(user_id, mode);

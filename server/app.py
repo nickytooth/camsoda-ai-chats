@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from bot.config import (
     SERVER_HOST, SERVER_PORT, CONTENT_DIR, UPLOADS_DIR,
     DEFAULT_USER_ID, PERSONA_FILE_SEXTING, GEMINI_FALLBACK_MODEL,
+    PHOTO_UNLOCK_COST,
 )
 from bot.memory.db import init_db, get_connection
 from bot.memory.stm import get_all_messages
@@ -147,19 +148,28 @@ async def get_history(mode: str, user_id: int = Query(default=None)):
         except Exception:
             logger.warning("Failed to seed story opening for user %d", user_id, exc_info=True)
 
-    return {
-        "mode": mode,
-        "messages": [
-            {
-                "role": m["role"],
-                "content": m["content"],
-                "timestamp": m["timestamp"],
-                "image_url": m.get("image_url"),
-            }
-            for m in messages
-            if m["role"] in ("user", "assistant")
-        ],
-    }
+    from bot.photo_content import is_photo_unlocked
+
+    out = []
+    for m in messages:
+        if m["role"] not in ("user", "assistant"):
+            continue
+        img = m.get("image_url")
+        entry = {
+            "role": m["role"],
+            "content": m["content"],
+            "timestamp": m["timestamp"],
+            "image_url": img,
+        }
+        # Her selfies (/content/...) are pay-to-see: locked unless already paid.
+        # User uploads (/uploads/...) are never locked.
+        if img and img.startswith("/content/"):
+            unlocked = await is_photo_unlocked(user_id, img)
+            entry["locked"] = not unlocked
+            entry["cost"] = PHOTO_UNLOCK_COST
+        out.append(entry)
+
+    return {"mode": mode, "messages": out}
 
 
 @app.get("/api/story/chapter")
@@ -170,6 +180,42 @@ async def get_story_chapter(user_id: int = Query(default=None)):
     uid = user_id or DEFAULT_USER_ID
     chapter = await engine.get_story_chapter(uid)
     return {"chapter": chapter}
+
+
+@app.get("/api/tokens")
+async def get_tokens(user_id: int = Query(default=None)):
+    """Current token balance (creates the account with the starting grant)."""
+    from bot.tokens import get_balance
+    uid = user_id or DEFAULT_USER_ID
+    return {"balance": await get_balance(uid)}
+
+
+@app.post("/api/tokens/topup")
+async def topup_tokens(user_id: int = Query(default=None)):
+    """Demo 'Get more' — grant a fresh batch of tokens."""
+    from bot.tokens import top_up
+    uid = user_id or DEFAULT_USER_ID
+    return {"balance": await top_up(uid)}
+
+
+@app.post("/api/unlock")
+async def unlock_photo(user_id: int = Query(default=None), photo_url: str = Query(...)):
+    """Spend PHOTO_UNLOCK_COST tokens to reveal one of Victoria's blurred selfies."""
+    from bot.tokens import spend, get_balance
+    from bot.photo_content import mark_photo_unlocked
+    uid = user_id or DEFAULT_USER_ID
+
+    if not photo_url.startswith("/content/"):
+        return JSONResponse({"error": "Not an unlockable photo"}, status_code=400)
+
+    new_balance = await spend(uid, PHOTO_UNLOCK_COST)
+    if new_balance is None:
+        return JSONResponse(
+            {"error": "Not enough tokens", "balance": await get_balance(uid)},
+            status_code=402,
+        )
+    await mark_photo_unlocked(uid, photo_url)
+    return {"unlocked": True, "balance": new_balance, "url": photo_url}
 
 
 @app.post("/api/suggest")
@@ -193,7 +239,8 @@ async def reset_user(user_id: int = Query(default=None)):
     conn = await get_connection()
     try:
         for table in ("messages", "memories", "user_facts", "sent_content",
-                      "story_progress", "engagement_state", "intimacy_state"):
+                      "story_progress", "engagement_state", "intimacy_state",
+                      "user_tokens"):
             try:
                 await conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (uid,))
             except Exception:
@@ -351,11 +398,15 @@ async def _send_response_with_typing(
             gap = bubble_gap if bubble_gap is not None else random.uniform(0.3, 0.7)
             await asyncio.sleep(gap)
 
-    # Send content URLs if any
+    # Send content URLs if any. Victoria's selfies arrive LOCKED (blurred) and
+    # cost tokens to unlock; the frontend uses photo_url to call /api/unlock.
     for url in response.content_urls:
         await manager.send_json(user_id, {
             "type": "image",
             "url": url,
+            "locked": True,
+            "cost": PHOTO_UNLOCK_COST,
+            "photo_url": url,
             "timestamp": time.time(),
             "mode": mode,
         })

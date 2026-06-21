@@ -105,10 +105,13 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
     isConnected,
     mode,
     isWaitingStory,
+    balance,
     sendMessage,
     switchMode,
     suggestReply,
     triggerCard,
+    unlockPhoto,
+    topUp,
   } = useChat({ userId, userName });
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -175,6 +178,14 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              onClick={topUp}
+              title="Get more tokens"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold rounded-full bg-amber-400/10 text-amber-300 border border-amber-400/20 hover:bg-amber-400/20 transition-colors"
+            >
+              <span>🪙</span>
+              <span>{balance ?? "…"}</span>
+            </button>
             <ModeToggle mode={mode} onSwitch={switchMode} />
             <button
               onClick={onReset}
@@ -200,6 +211,8 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
               key={msg.id}
               message={msg}
               isStory={mode === "story"}
+              onUnlock={unlockPhoto}
+              onTopUp={topUp}
             />
           ))}
           {isTyping && <TypingIndicator />}
