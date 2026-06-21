@@ -64,19 +64,20 @@ async def get_oldest_messages(user_id: int, limit: int, mode: str | None = "sext
     try:
         if mode is None:
             cursor = await conn.execute(
-                "SELECT id, role, content, timestamp FROM messages "
+                "SELECT id, role, content, timestamp, mode FROM messages "
                 "WHERE user_id = ? ORDER BY timestamp ASC LIMIT ?",
                 (user_id, limit * 2),
             )
         else:
             cursor = await conn.execute(
-                "SELECT id, role, content, timestamp FROM messages "
+                "SELECT id, role, content, timestamp, mode FROM messages "
                 "WHERE user_id = ? AND mode = ? ORDER BY timestamp ASC LIMIT ?",
                 (user_id, mode, limit * 2),
             )
         rows = await cursor.fetchall()
         return [
-            {"id": row["id"], "role": row["role"], "content": row["content"], "timestamp": row["timestamp"]}
+            {"id": row["id"], "role": row["role"], "content": row["content"],
+             "timestamp": row["timestamp"], "mode": row["mode"]}
             for row in rows
         ]
     finally:

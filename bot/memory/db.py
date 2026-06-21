@@ -45,15 +45,6 @@ CREATE TABLE IF NOT EXISTS sent_content (
     sent_at DOUBLE PRECISION NOT NULL,
     paid INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS pending_unlocks (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    content_id TEXT NOT NULL,
-    category TEXT NOT NULL,
-    star_price INTEGER NOT NULL,
-    created_at DOUBLE PRECISION NOT NULL,
-    unlocked INTEGER NOT NULL DEFAULT 0
-);
 CREATE TABLE IF NOT EXISTS user_facts (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -94,7 +85,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_user_mode ON messages(user_id, mode);
 CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
 CREATE INDEX IF NOT EXISTS idx_sent_content_user ON sent_content(user_id);
 CREATE INDEX IF NOT EXISTS idx_sent_content_paid ON sent_content(user_id, content_id, paid);
-CREATE INDEX IF NOT EXISTS idx_pending_unlocks_user ON pending_unlocks(user_id, unlocked);
 CREATE INDEX IF NOT EXISTS idx_user_facts ON user_facts(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_facts_key ON user_facts(user_id, key);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_story_progress_user ON story_progress(user_id);

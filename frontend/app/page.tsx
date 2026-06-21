@@ -35,7 +35,7 @@ const STARTER_MESSAGES: Record<string, string[]> = {
 const PROFILE = {
   name: "Victoria Donovan",
   tagline:
-    "Your girlfriend's mother — elegant, married, and quietly starving. She knows it's wrong. That's the best part.",
+    "Your girlfriend's mother — elegant, married, and quietly horny. She knows it's wrong. That's the best part.",
   bio:
     "Texas-born, Miami-made. By day she closes eight-figure waterfront deals; by night she pours a glass of red in a house that's gone quiet. Twenty years married to a man who stopped seeing her — and she's done pretending she doesn't want more. That what she wants is so forbidden? That's exactly the thrill.",
   profile: {

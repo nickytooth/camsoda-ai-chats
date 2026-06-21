@@ -12,12 +12,15 @@ Configured in `server/app.py` and `bot/config.py`:
 
 | Role | Provider | Default model | Used for |
 |------|----------|---------------|----------|
-| **SFW** | Anthropic (Claude) | `claude-sonnet-4-20250514` | Sexting replies at intimacy stage 1-2, or any SFW message |
-| **NSFW** | xAI (Grok) | `grok-3` | Sexting replies at stage 3 + NSFW, **all Story mode**, image analysis |
-| **Classifier** | Google (Gemini) | `gemini-2.0-flash` | SFW/NSFW routing, summarization, intimacy scoring, story scoring |
+| **Chat / Story** | xAI (Grok) | `grok-3` | **Every** Sexting and Story reply, plus image analysis |
+| **Fallback** | Google (Gemini) | `gemini-2.5-flash` | Generation fallback when Grok fails (safety filters off) |
+| **Classifier / Summarizer** | Google (Gemini) | `gemini-2.0-flash` | Engagement classification, summarization, story scoring |
 | **Embeddings** | OpenAI | `text-embedding-3-small` | LTM vector embeddings only |
 
-All model names are overridable via environment variables.
+Victoria is a **single always-open persona** — there is no SFW/NSFW model
+routing or intimacy-stage switching. The Anthropic (Claude) provider remains in
+`bot/providers/` but is not constructed at runtime. All model names are
+overridable via environment variables.
 
 ---
 
@@ -28,20 +31,19 @@ prompt** is assembled from these sources, in order:
 
 | # | Section | Source |
 |---|---------|--------|
-| 1 | Persona identity, voice, style, background, character memories, boundaries | **Persona bible** YAML (`personas/victoria.yaml` or `personas/victoria_nsfw.yaml`) via `Persona.to_system_prompt()` |
+| 1 | Persona identity, voice, style, background, character memories, boundaries | **Persona bible** YAML (`personas/victoria1.yaml`) via `Persona.to_system_prompt()` |
 | 2 | User's name line | `user_facts` table (key `name`) |
 | 3 | Time-of-day mood + activity + live weather | `bot/time_context.py` (Miami timezone + Open-Meteo weather API) |
 | 4 | Story chapter context (Story mode only) | `stories/victoria_story.yaml` via `_get_story_context()` |
 | 5 | Texting-style directive (Sexting mode only) | Hardcoded in `prompt_builder.py` |
-| 6 | Intimacy stage instructions (Sexting mode only) | Persona YAML `stage_instructions` |
-| 7 | Known facts | `user_facts` table via `format_facts_for_prompt()` |
-| 8 | Relevant long-term memories | `memories` table via `retrieve_relevant()` |
-| 9 | Soft-push hint (Sexting only, optional) | `bot/engagement.py` |
+| 6 | Known facts | `user_facts` table via `format_facts_for_prompt()` |
+| 7 | Relevant long-term memories | `memories` table via `retrieve_relevant()` |
+| 8 | Soft-push hint (Sexting only, optional) | `bot/engagement.py` |
 
 After the system prompt, the **recent conversation** (STM) is appended as
 `user`/`assistant` turns.
 
-### 2a. The persona bible (`personas/victoria.yaml`)
+### 2a. The persona bible (`personas/victoria1.yaml`)
 
 `Persona.to_system_prompt()` (`bot/persona.py`) pulls these YAML sections:
 
@@ -51,9 +53,10 @@ After the system prompt, the **recent conversation** (STM) is appended as
 - `memories` → `sexual` / `non_sexual` **character memories** (her backstory facts)
 - `boundaries` → hard rules that are never violated
 
-There are **two persona bibles**:
-- `personas/victoria.yaml` — SFW persona (used for Claude + all Story mode)
-- `personas/victoria_nsfw.yaml` — explicit persona (used for Grok at stage 3 NSFW)
+There is **one active persona bible**: `personas/victoria1.yaml` (a single
+always-open persona used for both Sexting and Story). The older
+`personas/archive/victoria.yaml` and `personas/archive/victoria_nsfw.yaml` are
+kept for reference only and are not loaded.
 
 ---
 
@@ -74,26 +77,26 @@ and a 0.5-1.5s pause between bubbles — to feel like real typing.
 
 ### 3b. Sexting mode
 
-1. **Batching** — `process_sexting_batched()` collects rapid-fire messages
-   over a short window (random `MIN..MAX_RESPONSE_DELAY` × time-of-day
-   multiplier, capped at 15s), de-duplicates them, and joins them with `\n`.
+1. **Batching** — `process_sexting_batched()` debounces rapid-fire messages
+   (replies `SEXTING_DEBOUNCE_SECONDS` after the user's last message; each new
+   message resets the countdown), de-duplicates them, and joins them with `\n`.
    *(User messages are persisted to the DB immediately on arrival, before the
    batch flushes, so history is never lost on mode switch.)*
-2. **`_process_sexting()`** — classify SFW/NSFW (Gemini) → evaluate intimacy
-   stage → pick provider + persona → retrieve LTM (if the gate allows) →
-   inject facts → build prompt → generate.
+2. **`_process_sexting()`** — classify the message for engagement tracking
+   (Gemini) → retrieve LTM (if the gate allows) → inject facts → build prompt →
+   generate with Grok (single always-open persona).
 3. **Style** — the Sexting-only directive in `prompt_builder.py` enforces a
    real-chat feel: **no trailing periods**, short punchy lines, 1-3 messages
    each on its own line. The model itself emits the newlines that
    `_split_response` turns into separate bubbles.
 
-**Provider routing:** stage 3 **and** NSFW classification → Grok + NSFW
-persona. Everything else → Claude + SFW persona.
+**Provider routing:** none. Every Sexting reply is generated by Grok with the
+single always-open persona; Gemini is used only as a fallback if Grok fails.
 
 ### 3c. Story mode
 
 1. **Direct, one-at-a-time** processing (no batching) via `_process_story()`.
-2. Always uses **Grok** + the **SFW persona** + **story context**
+2. Always uses **Grok** + the **always-open persona** + **story context**
    (`_get_story_context()`): the current chapter's `setting`, `mood`,
    `summary`, and `narrative_beats` from `stories/victoria_story.yaml`, plus
    instructions to use `*italic actions*` and let scenes breathe.
@@ -170,7 +173,6 @@ whatever she learns in one mode, she remembers in the other.
 
 ```
 Persona bible (YAML)      → identity, voice, style, backstory, boundaries
-stage_instructions (YAML) → intimacy stage behavior (Sexting)
 victoria_story.yaml       → chapter setting/mood/beats + progression goals (Story)
 time_context.py           → time-of-day mood + live weather
 user_facts (DB)           → hard facts injected every turn

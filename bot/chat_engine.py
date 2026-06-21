@@ -5,6 +5,7 @@ Processes messages for both Sexting and Story modes.
 
 import asyncio
 import logging
+import random
 import re
 import time
 import uuid
@@ -19,13 +20,44 @@ from bot.prompt_builder import build_prompt
 from bot.router import classify_fast
 from bot.engagement import track_message, should_soft_push, record_push, get_engagement_state
 from bot.mood import mood_for_message, is_ai_question
-from bot.content_library import pick_unshared, mark_shared
-from bot.time_context import get_time_period
+from bot.content_library import pick_unshared, pick_from_library, mark_shared
+from bot.time_context import get_time_period, get_preferred_tags
+from bot.photo_content import pick_current_location_photo
 from bot.providers.base import LLMProvider
-from bot.config import STM_MAX_TURNS, NSFW_PERSONA_FILE, STORY_FILE, UPLOADS_DIR
+from bot.config import STM_MAX_TURNS, STORY_FILE, UPLOADS_DIR
 from bot.memory.db import get_connection
 
 logger = logging.getLogger(__name__)
+
+PHOTO_OPT_IN_PATTERN = re.compile(
+    r"\b(yes|yeah|yep|sure|send|send it|show me|let me see|i want|please|ok|okay)\b",
+    re.IGNORECASE,
+)
+PHOTO_REQUEST_PATTERN = re.compile(
+    r"\b(send|show|give|take|snap|share)\b.*\b(photo|pic|picture|selfie)\b"
+    r"|\b(photo|pic|picture|selfie)\b.*\b(of you|from you|please|pls)\b",
+    re.IGNORECASE,
+)
+# Cues that HER most recent message offered/teased a photo of herself. When she
+# has just offered one, a short opt-in like "yes" or "show me" should actually
+# send a photo — even without a post-user-photo pending offer.
+PHOTO_OFFER_CUE_PATTERN = re.compile(
+    r"\bone of me\b"
+    r"|\b(photo|pic|picture|selfie)s?\s+of\s+me\b"
+    r"|\b(send|show)\s+you\s+(a|one|my|some)?\s*(photo|pic|picture|selfie)"
+    r"|\bprivate\s+(photo|pic|picture)s?\b"
+    r"|\bwant\s+(a|one|my)?\s*(photo|pic|picture|selfie)\b"
+    r"|\bselfie\b",
+    re.IGNORECASE,
+)
+
+
+def _her_last_message_offered_photo(stm: list[dict]) -> bool:
+    """True if Victoria's most recent assistant turn offered/teased a photo."""
+    for m in reversed(stm):
+        if m.get("role") == "assistant":
+            return bool(PHOTO_OFFER_CUE_PATTERN.search(m.get("content") or ""))
+    return False
 
 
 def _image_ext(image_bytes: bytes) -> str:
@@ -90,14 +122,17 @@ class ChatEngine:
         self,
         persona: Persona,
         nsfw_persona: Persona | None,
-        sfw_provider: LLMProvider,
         nsfw_provider: LLMProvider,
         classifier_provider: LLMProvider,
+        sfw_provider: LLMProvider | None = None,
         vision_provider=None,
         fallback_provider: LLMProvider | None = None,
     ):
         self.persona = persona
         self.nsfw_persona = nsfw_persona
+        # Victoria is always-open: every reply runs through nsfw_provider (Grok).
+        # sfw_provider is retained for optional future SFW/intimacy-stage routing
+        # but is currently unused.
         self.sfw_provider = sfw_provider
         self.nsfw_provider = nsfw_provider
         self.classifier_provider = classifier_provider
@@ -111,6 +146,7 @@ class ChatEngine:
         self._batch_tasks: dict[int, asyncio.Task] = {}
         self._last_activity: dict[int, float] = {}
         self._processing_lock: dict[int, asyncio.Lock] = {}
+        self._pending_photo_offer: dict[int, float] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -306,42 +342,49 @@ class ChatEngine:
         (so she never repeats), and when the pool is exhausted she improvises a
         fresh, personalised one. `kind` is 'fantasy' or 'story'."""
         mode = "sexting"
-        item = await pick_unshared(user_id, kind)
+        # Stories AND fantasies must ALWAYS come from the authored library files
+        # (cycling through them, repeating once exhausted) — never improvised from
+        # persona memories. When a library item's tags match her current
+        # location/context it is preferred; otherwise the sequential order stands.
+        item = await pick_from_library(user_id, kind, preferred_tags=get_preferred_tags())
 
+        # Library item found: deliver the authored text VERBATIM — one paragraph
+        # per bubble, exactly as written in the file. No LLM rewrite. A short,
+        # randomised lead-in bubble always comes first ("I don't know if I should
+        # tell you this, but....").
         if item:
-            if kind == "story":
-                hint = (
-                    "He just asked to hear a story from your past. Tell him THIS one, in "
-                    "your own voice, as about three MEATIER bubbles with real detail and "
-                    "heat (no trailing period, each bubble on its own line). Set the scene, "
-                    "build it, and finish on something that makes him ache. Don't quote it "
-                    "word for word — tell it like a confession spilling out of you:\n\n"
-                    f"{item['text'].strip()}"
-                )
-            else:
-                hint = (
-                    "He just asked to hear one of your fantasies. Tell him THIS one in your "
-                    "own voice, as a few short charged bubbles (no trailing period, each on "
-                    "its own line). Vivid and filthy but elegant. Don't quote it word for "
-                    "word — make it sound like it's spilling out of you right now:\n\n"
-                    f"{item['text'].strip()}"
-                )
+            paras = [
+                " ".join(line.strip() for line in p.split("\n") if line.strip())
+                for p in item["text"].strip().split("\n\n")
+                if p.strip()
+            ]
+            if not paras:
+                paras = self._repack_to_n(item["text"], 3)
+            paras = [self._card_lead_in(kind)] + paras
+            await add_message(user_id, "assistant", "\n".join(paras), mode=mode)
+            await mark_shared(user_id, kind, item["id"])
+            logger.info("Card %s '%s' delivered verbatim to user %d", kind, item["id"], user_id)
+            return ChatResponse(messages=paras)
+
+        # SAFETY NET ONLY: this is reached solely when the authored library file
+        # is missing or empty (pick_from_library auto-resets the rotation, so a
+        # populated library ALWAYS returns an item above). In that edge case we
+        # improvise a fresh, personalised one rather than send nothing.
+        logger.warning("Card %s library empty/missing — improvising for user %d", kind, user_id)
+        if kind == "story":
+            hint = (
+                "He asked for a story and you've already told him your best ones. Either "
+                "invent a fresh vivid memory from your past, or warmly call back to one "
+                "you've already told him ('I keep thinking about when I told you about...'). "
+                "About three meatier bubbles, real heat and detail, no trailing period."
+            )
         else:
-            # Library exhausted for this user — improvise a fresh, personalised one.
-            if kind == "story":
-                hint = (
-                    "He asked for a story and you've already told him your best ones. Either "
-                    "invent a fresh vivid memory from your past, or warmly call back to one "
-                    "you've already told him ('I keep thinking about when I told you about...'). "
-                    "About three meatier bubbles, real heat and detail, no trailing period."
-                )
-            else:
-                hint = (
-                    "He asked for a fantasy and you've already shared your usual ones with him. "
-                    "Invent a NEW one, tailored to HIM and what you know he likes from your "
-                    "facts and memories about him. A few short charged bubbles, filthy but "
-                    "elegant, no trailing period."
-                )
+            hint = (
+                "He asked for a fantasy and you've already shared your usual ones with him. "
+                "Invent a NEW one, tailored to HIM and what you know he likes from your "
+                "facts and memories about him. A few short charged bubbles, filthy but "
+                "elegant, no trailing period."
+            )
 
         stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
         active_persona = self.nsfw_persona or self.persona
@@ -384,12 +427,10 @@ class ChatEngine:
             return ChatResponse()
 
         await add_message(user_id, "assistant", response_text, mode=mode)
-        if item:
-            await mark_shared(user_id, kind, item["id"])
-            logger.info("Card %s '%s' delivered to user %d", kind, item["id"], user_id)
-        else:
-            logger.info("Card %s improvised (library exhausted) for user %d", kind, user_id)
-        return ChatResponse(messages=self._split_response(response_text))
+        logger.info("Card %s improvised (library empty) for user %d", kind, user_id)
+        # Stories and fantasies are always delivered as exactly 3 paced bubbles.
+        messages = self._repack_to_n(response_text, 3)
+        return ChatResponse(messages=messages)
 
     async def get_story_chapter(self, user_id: int) -> int:
         """Get current story chapter for user."""
@@ -585,6 +626,30 @@ class ChatEngine:
         provider = self.nsfw_provider
         active_persona = self.nsfw_persona or self.persona
 
+        # A photo goes out when he explicitly asks for one, OR when he opts in
+        # ("yes" / "show me") right after she offered one — either via the
+        # post-user-photo pending offer or a fresh tease in her last message.
+        opt_in = bool(PHOTO_OPT_IN_PATTERN.search(text))
+        pending_offer = bool(self._pending_photo_offer.get(user_id))
+        she_just_offered = _her_last_message_offered_photo(stm)
+        photo_requested = bool(PHOTO_REQUEST_PATTERN.search(text)) or (
+            (pending_offer or she_just_offered) and opt_in
+        )
+        if photo_requested and "[User sent a photo:" not in text:
+            from_pending_offer = pending_offer
+            photo_url = await pick_current_location_photo(user_id)
+            self._pending_photo_offer.pop(user_id, None)
+            if photo_url:
+                response_text = "I thought you might say that..." if from_pending_offer else "Just for you..."
+                await add_message(user_id, "assistant", response_text, mode=mode)
+                await add_message(user_id, "assistant", "[image]", mode=mode, image_url=photo_url)
+                return ChatResponse(messages=[response_text], content_urls=[photo_url])
+            response_text = "I want to send you one, but I don't have the right one from where I am right now"
+            await add_message(user_id, "assistant", response_text, mode=mode)
+            return ChatResponse(messages=[response_text])
+        if self._pending_photo_offer.get(user_id) and not PHOTO_OPT_IN_PATTERN.search(text):
+            self._pending_photo_offer.pop(user_id, None)
+
         # LTM
         ltm = []
         if should_retrieve(user_id, text):
@@ -627,8 +692,9 @@ class ChatEngine:
         # He just sent a photo → strong, last-word instruction so she reacts with
         # desire and never rejects how he actually looks (the persona's pervasive
         # "young man" fixation otherwise makes her dismiss his real selfie).
+        is_user_photo = "[User sent a photo:" in text
         photo_hint = None
-        if "[User sent a photo:" in text:
+        if is_user_photo:
             photo_hint = (
                 "IMPORTANT FOR THIS REPLY — HE JUST SENT YOU A PHOTO OF HIMSELF (the "
                 "description is in his message above). This IS him. React with genuine "
@@ -640,7 +706,10 @@ class ChatEngine:
                 "Whatever his age or appearance, a real photo of him never disappoints you "
                 "— your 'young man' craving is a private feeling, NEVER a yardstick you "
                 "measure him against. ONLY if the image is obviously not a person at all "
-                "(a landscape, an object, a meme) may you tease lightly and ask for one of him."
+                "(a landscape, an object, a meme) may you tease lightly and ask for one of him. "
+                "Send EXACTLY TWO chat bubbles, each on its own line. Bubble 1: enjoy the photo "
+                "and compliment him specifically. Bubble 2: ask if he wants a photo of you too. "
+                "Do NOT send or promise the photo yet; only ask."
             )
 
         # Build and generate
@@ -672,13 +741,24 @@ class ChatEngine:
         if not response_text or not response_text.strip():
             return ChatResponse()
 
+        response_parts = None
+        if is_user_photo:
+            response_parts = self._repack_to_n(response_text, 2)
+            if len(response_parts) == 1:
+                response_parts.append("Do you want one of me too?")
+            response_parts = response_parts[:2]
+            response_text = "\n".join(response_parts)
+
         await add_message(user_id, "assistant", response_text, mode=mode)
+
+        if is_user_photo:
+            self._pending_photo_offer[user_id] = time.time()
 
         # Only now that a reply genuinely went out do we spend the soft push.
         if will_push:
             await record_push(user_id)
 
-        parts = self._split_response(response_text)
+        parts = response_parts if response_parts is not None else self._split_response(response_text)
         return ChatResponse(messages=parts)
 
     # ------------------------------------------------------------------
@@ -760,3 +840,53 @@ class ChatEngine:
             tail = " ".join(parts[ChatEngine.MAX_BUBBLES - 1:])
             parts = head + [tail]
         return parts
+
+    _LEAD_INS_STORY = [
+        "I don't know if I should be telling you this, but....",
+        "God, I've never told anyone this....",
+        "Can I confess something to you?....",
+        "Mmm, you really want to know? Don't say I didn't warn you....",
+        "There's something I've been dying to tell you....",
+        "Promise me you won't look at me differently after this....",
+    ]
+    _LEAD_INS_FANTASY = [
+        "I don't know if I should admit this to you, but....",
+        "Promise you won't think less of me for this....",
+        "I've been too shy to say this out loud, but....",
+        "Lean in close, this one's filthy....",
+        "Can I tell you what I keep thinking about?....",
+        "I shouldn't want this as badly as I do, but....",
+    ]
+
+    @staticmethod
+    def _card_lead_in(kind: str) -> str:
+        """A short, randomised teaser bubble that always opens a card story/fantasy."""
+        pool = ChatEngine._LEAD_INS_STORY if kind == "story" else ChatEngine._LEAD_INS_FANTASY
+        return random.choice(pool)
+
+    @staticmethod
+    def _repack_to_n(text: str, n: int) -> list[str]:
+        """Repack a model reply into EXACTLY n bubbles (best-effort even split).
+
+        Used for stories so they always arrive as the same number of paced
+        bubbles regardless of how the model line-broke its output.
+        """
+        text = text.replace("\u2014", "-").replace("\u2013", "-").strip()
+        segments = [p.strip() for p in text.split("\n") if p.strip()]
+        # If we don't have enough line-segments, fall back to sentence splitting.
+        if len(segments) < n:
+            joined = " ".join(segments) if segments else text
+            sentences = re.split(r"(?<=[.!?\u2026])\s+", joined)
+            segments = [s.strip() for s in sentences if s.strip()]
+        if not segments:
+            return [text] if text else []
+        if len(segments) <= n:
+            return segments
+        # Distribute segments into n contiguous, roughly even groups.
+        base, extra = divmod(len(segments), n)
+        groups, idx = [], 0
+        for i in range(n):
+            size = base + (1 if i < extra else 0)
+            groups.append(" ".join(segments[idx:idx + size]).strip())
+            idx += size
+        return [g for g in groups if g]

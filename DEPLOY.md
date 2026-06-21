@@ -22,10 +22,10 @@ Railway → **New → Database → PostgreSQL**. It exposes `DATABASE_URL` autom
   - `DATABASE_URL` → reference the Postgres service: `${{Postgres.DATABASE_URL}}`
   - `XAI_API_KEY`, `XAI_MODEL` (e.g. `grok-4.3`)
   - `GOOGLE_API_KEY`, `GOOGLE_MODEL` (e.g. `gemini-3-flash-preview`), `GEMINI_FALLBACK_MODEL` (e.g. `gemini-2.5-flash`)
-  - `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`
   - `OPENAI_API_KEY`, `OPENAI_EMBEDDING_MODEL` (e.g. `text-embedding-3-small`)
   - `OPENWEATHER_API_KEY` (optional)
-  - optional tuning: `MIN_RESPONSE_DELAY`, `MAX_RESPONSE_DELAY`, `SEXTING_DEBOUNCE_SECONDS`, `DEFAULT_USER_ID`
+  - optional tuning: `SEXTING_DEBOUNCE_SECONDS`, `DEFAULT_USER_ID`
+  - `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` are **not required** (Anthropic is not used at runtime)
 - Generate a public domain (Settings → Networking). Note it, e.g. `https://victoria-backend.up.railway.app`.
 - Tables are created automatically on first boot (`init_db`).
 

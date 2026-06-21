@@ -18,6 +18,15 @@ SUMMARIZE_PROMPT = """Analyze the following conversation and extract TWO things:
    name, location, age, job, gender, boundaries, agreed_prices, relationship_status
    Also include any other notable preferences or details as custom keys (e.g. "favorite_color", "pet_name", "kinks").
 
+IMPORTANT — FICTION vs REALITY:
+Lines tagged [STORY] are fictional role-play set in an imaginary scene. They are
+NOT real facts about the user. Do NOT extract story-mode events, settings, or
+role-play personas as real "facts" or identity memories about the user. Only
+extract real-world details the user genuinely revealed about themselves
+(typically from untagged / sexting lines). You MAY record a low-importance
+"thread" memory about an ongoing story if it helps continuity, but never as a
+real fact.
+
 Return ONLY a JSON object with both keys. No other text.
 
 Example:
@@ -48,7 +57,8 @@ def _format_messages_for_summary(messages: list[dict]) -> str:
     lines = []
     for msg in messages:
         prefix = "User" if msg["role"] == "user" else "Bot"
-        lines.append(f"{prefix}: {msg['content']}")
+        tag = "[STORY] " if msg.get("mode") == "story" else ""
+        lines.append(f"{tag}{prefix}: {msg['content']}")
     return "\n".join(lines)
 
 

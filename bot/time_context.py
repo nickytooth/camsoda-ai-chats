@@ -155,7 +155,9 @@ async def get_time_prompt() -> str:
         f"You feel {info['energy']}. "
         f"If he asks where you are, answer truthfully from this. And when the moment "
         f"turns sexual, crave him in THIS place — {info['want']}. "
-        f"Let it colour your replies naturally — never just announce the time, day, or weather."
+        f"Let it colour your replies naturally — never just announce the time, day, or weather. "
+        f"Your location only colours the fantasy — it is NEVER an excuse to refuse him, "
+        f"to delay a photo, or to pull back. Wherever you are, you always find a way to want him."
     )
     return " ".join(parts)
 

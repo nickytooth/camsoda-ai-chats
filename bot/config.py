@@ -12,10 +12,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/victoria"
 )
-PERSONA_FILE = BASE_DIR / os.getenv("PERSONA_FILE", "personas/victoria.yaml")
-NSFW_PERSONA_FILE = BASE_DIR / os.getenv("NSFW_PERSONA_FILE", "personas/victoria_nsfw.yaml")
-
 # Victoria is a single, always-open persona for all sexting.
+# The legacy SFW/NSFW persona files now live in personas/archive/ and are not loaded.
 PERSONA_FILE_SEXTING = BASE_DIR / os.getenv("SINGLE_PERSONA_FILE", "personas/victoria1.yaml")
 STORY_FILE = BASE_DIR / os.getenv("STORY_FILE", "stories/victoria_story.yaml")
 
@@ -25,7 +23,6 @@ STORY_FILE = BASE_DIR / os.getenv("STORY_FILE", "stories/victoria_story.yaml")
 FANTASIES_FILE = BASE_DIR / os.getenv("FANTASIES_FILE", "library/fantasies.yaml")
 STORIES_FILE = BASE_DIR / os.getenv("STORIES_FILE", "library/stories.yaml")
 
-CONTENT_CONFIG = BASE_DIR / os.getenv("CONTENT_CONFIG", "content_config.yaml")
 CONTENT_DIR = BASE_DIR / os.getenv("CONTENT_DIR", "content")
 
 # Where photos the USER uploads are stored on disk and served from (so they
@@ -57,8 +54,6 @@ SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 
 # Humanize timing (seconds)
-MIN_RESPONSE_DELAY = int(os.getenv("MIN_RESPONSE_DELAY", "3"))
-MAX_RESPONSE_DELAY = int(os.getenv("MAX_RESPONSE_DELAY", "10"))
 # Sexting batching is a debounce: she replies this many seconds after the
 # user's LAST message; every new message resets the countdown.
 SEXTING_DEBOUNCE_SECONDS = float(os.getenv("SEXTING_DEBOUNCE_SECONDS", "5"))

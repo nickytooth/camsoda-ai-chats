@@ -57,9 +57,24 @@ async def _shared_ids(user_id: int, kind: str) -> set[str]:
         await conn.close()
 
 
-async def pick_unshared(user_id: int, kind: str) -> dict | None:
-    """Return a random library item this user hasn't been told yet, or None if
-    the pool is exhausted (caller should then fall back to a personalised one)."""
+def _matches_tags(item: dict, preferred_tags: list[str] | None) -> bool:
+    if not preferred_tags:
+        return False
+    item_tags = {str(t).lower() for t in (item.get("tags") or [])}
+    wanted = {str(t).lower() for t in preferred_tags}
+    return bool(item_tags & wanted)
+
+
+async def pick_unshared(
+    user_id: int, kind: str, preferred_tags: list[str] | None = None
+) -> dict | None:
+    """Return the NEXT library item this user hasn't been told yet, or None if the
+    pool is exhausted (caller should then fall back to a personalised one).
+
+    Order: file order (first to last). If `preferred_tags` is given, the earliest
+    unshared item whose tags intersect them wins; otherwise it falls back to the
+    earliest unshared item, so behaviour is unchanged when nothing matches.
+    """
     items = _load(kind)
     if not items:
         return None
@@ -67,7 +82,43 @@ async def pick_unshared(user_id: int, kind: str) -> dict | None:
     candidates = [it for it in items if it["id"] not in shared]
     if not candidates:
         return None
-    return random.choice(candidates)
+    # Prefer the earliest unshared item that matches the current location/context.
+    for it in candidates:
+        if _matches_tags(it, preferred_tags):
+            return it
+    # No tag match (or none requested) — keep the deterministic sequential order.
+    return candidates[0]
+
+
+async def pick_from_library(
+    user_id: int, kind: str, preferred_tags: list[str] | None = None
+) -> dict | None:
+    """Always return a library item for this kind, never improvising.
+
+    Prefers items the user hasn't heard yet (and, within those, ones matching the
+    current location/context tags); once the pool is exhausted it resets the
+    user's shared history for this kind and starts the rotation over, so a
+    story/fantasy request ALWAYS comes from the authored file.
+    """
+    item = await pick_unshared(user_id, kind, preferred_tags)
+    if item:
+        return item
+    # Pool exhausted — reset and pick fresh from the full library.
+    await reset_shared(user_id, kind)
+    return await pick_unshared(user_id, kind, preferred_tags)
+
+
+async def reset_shared(user_id: int, kind: str) -> None:
+    """Clear which items of this kind the user has already been told."""
+    conn = await get_connection()
+    try:
+        await conn.execute(
+            "DELETE FROM shared_content WHERE user_id = ? AND kind = ?",
+            (user_id, kind),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
 
 
 async def mark_shared(user_id: int, kind: str, item_id: str) -> None:

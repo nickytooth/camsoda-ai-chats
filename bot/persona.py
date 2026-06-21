@@ -1,7 +1,7 @@
 import random
 import yaml
 from pathlib import Path
-from bot.config import PERSONA_FILE
+from bot.config import PERSONA_FILE_SEXTING
 
 
 class Persona:
@@ -88,7 +88,7 @@ class Persona:
 
 
 def load_persona(path: Path | None = None) -> Persona:
-    path = path or PERSONA_FILE
+    path = path or PERSONA_FILE_SEXTING
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return Persona(data)

@@ -88,7 +88,7 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     } catch (e) {
       console.error("Failed to load history:", e);
     }
-  }, []);
+  }, [userId]);
 
   // Connect WebSocket
   const connect = useCallback(() => {
@@ -126,10 +126,11 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
           break;
         case "image":
           setIsTyping(false);
+          const imageUrl = data.url?.startsWith("http") ? data.url : `${API_BASE}${data.url}`;
           const imgMsg: ChatMessage = {
             id: genId(),
             role: "assistant",
-            content: `[image:${data.url}]`,
+            content: `[image:${imageUrl}]`,
             timestamp: data.timestamp || Date.now() / 1000,
             mode: data.mode || "sexting",
           };
@@ -147,7 +148,7 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     ws.onerror = (err) => {
       console.error("WebSocket error:", err);
     };
-  }, [wsUrl, userId]);
+  }, [wsUrl, userId, userName]);
 
   // Send message
   const sendMessage = useCallback(
@@ -242,7 +243,10 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     [loadHistory]
   );
 
-  // Connect on mount (reconnect when userId changes)
+  // Connect and load history. connect/loadHistory are memoised on the
+  // connection identity (wsUrl/userId/userName) and userId respectively, so this
+  // re-runs — reconnecting and reloading — whenever the user changes. Mode-driven
+  // reloads are handled by switchMode, so `mode` is intentionally not a dep.
   useEffect(() => {
     connect();
     loadHistory(mode);
@@ -250,7 +254,8 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
     };
-  }, [userId]); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connect, loadHistory]);
 
   return {
     messages,

@@ -19,19 +19,11 @@ class GeminiProvider(LLMProvider):
         # short generations. Leave None to keep the model's default behaviour.
         self._thinking_budget = thinking_budget
 
-    async def generate(self, messages: list[dict]) -> str:
-        client = _get_client()
-
-        system_msg = ""
-        contents = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system_msg = msg["content"]
-            else:
-                role = "user" if msg["role"] == "user" else "model"
-                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-
-        config = genai.types.GenerateContentConfig(
+    def _build_config(self, system_msg: str | None = None) -> "genai.types.GenerateContentConfig":
+        # Safety filters are disabled across the board: this provider also runs
+        # summarization/classification over explicit sexting transcripts, which
+        # the default filters would otherwise drop (empty response).
+        return genai.types.GenerateContentConfig(
             system_instruction=system_msg if system_msg else None,
             max_output_tokens=1024,
             thinking_config=(
@@ -46,10 +38,22 @@ class GeminiProvider(LLMProvider):
             ],
         )
 
+    async def generate(self, messages: list[dict]) -> str:
+        client = _get_client()
+
+        system_msg = ""
+        contents = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_msg = msg["content"]
+            else:
+                role = "user" if msg["role"] == "user" else "model"
+                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
         response = await client.aio.models.generate_content(
             model=self._model,
             contents=contents,
-            config=config,
+            config=self._build_config(system_msg),
         )
         if response.text is None:
             raise RuntimeError("Gemini returned empty response (likely safety-filtered)")
@@ -60,6 +64,7 @@ class GeminiProvider(LLMProvider):
         response = await client.aio.models.generate_content(
             model=self._model,
             contents=prompt,
+            config=self._build_config(),
         )
         if response.text is None:
             raise RuntimeError("Gemini returned empty response (likely safety-filtered)")
