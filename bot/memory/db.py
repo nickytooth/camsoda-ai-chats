@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS engagement_state (
     last_message_at DOUBLE PRECISION DEFAULT 0,
     last_reengage_at DOUBLE PRECISION DEFAULT 0
 );
+ALTER TABLE engagement_state ADD COLUMN IF NOT EXISTS last_push_content_id TEXT;
 CREATE TABLE IF NOT EXISTS shared_content (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL,

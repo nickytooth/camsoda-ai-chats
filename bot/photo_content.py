@@ -92,6 +92,22 @@ async def _sent_ids(user_id: int, urls: set[str]) -> set[str]:
         await conn.close()
 
 
+async def _paid_ids(user_id: int, urls: set[str]) -> set[str]:
+    """URLs the user has already bought (paid=1) — these are never re-sent."""
+    if not urls:
+        return set()
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT content_id FROM sent_content WHERE user_id = ? AND category = ? AND paid = 1",
+            (user_id, CATEGORY),
+        )
+        rows = await cursor.fetchall()
+        return {row["content_id"] for row in rows if row["content_id"] in urls}
+    finally:
+        await conn.close()
+
+
 async def _mark_sent(user_id: int, url: str) -> None:
     conn = await get_connection()
     try:
@@ -105,13 +121,17 @@ async def _mark_sent(user_id: int, url: str) -> None:
 
 
 async def _reset_sent(user_id: int, urls: set[str]) -> None:
+    """Clear the 'already sent' marks so unbought photos can be re-sent. Only
+    deletes UNPAID rows (paid = 0) — bought photos keep their paid history and
+    are never resurfaced."""
     if not urls:
         return
     conn = await get_connection()
     try:
         for url in urls:
             await conn.execute(
-                "DELETE FROM sent_content WHERE user_id = ? AND category = ? AND content_id = ?",
+                "DELETE FROM sent_content WHERE user_id = ? AND category = ? "
+                "AND content_id = ? AND paid = 0",
                 (user_id, CATEGORY, url),
             )
         await conn.commit()
@@ -155,17 +175,42 @@ async def mark_photo_unlocked(user_id: int, url: str) -> None:
         await conn.close()
 
 
+async def has_sendable_photo(user_id: int) -> bool:
+    """True if the current scene has at least one photo the user hasn't bought.
+    Bought photos are excluded, so this matches what pick_current_location_photo
+    can actually return (lets callers decide to send a photo without consuming one)."""
+    photos = _eligible_photos()
+    if not photos:
+        return False
+    urls = {url for _, _, url in photos}
+    paid = await _paid_ids(user_id, urls)
+    return any(url not in paid for _, _, url in photos)
+
+
 async def pick_current_location_photo(user_id: int) -> str | None:
     photos = _eligible_photos()
     if not photos:
         return None
     urls = {url for _, _, url in photos}
-    sent = await _sent_ids(user_id, urls)
-    for _, _, url in photos:
+
+    # Bought photos are excluded forever — never re-send something he paid for.
+    paid = await _paid_ids(user_id, urls)
+    available = [(loc, p, url) for (loc, p, url) in photos if url not in paid]
+    if not available:
+        return None
+
+    avail_urls = {url for _, _, url in available}
+    sent = await _sent_ids(user_id, avail_urls)
+
+    # Prefer a never-sent photo for variety.
+    for _, _, url in available:
         if url not in sent:
             await _mark_sent(user_id, url)
             return url
-    await _reset_sent(user_id, urls)
-    url = photos[0][2]
+
+    # All available (unbought) photos have been sent before — cycle: clear only
+    # their unpaid 'sent' marks and re-send from the top.
+    await _reset_sent(user_id, avail_urls)
+    url = available[0][2]
     await _mark_sent(user_id, url)
     return url

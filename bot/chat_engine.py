@@ -18,26 +18,67 @@ from bot.memory.summarizer import maybe_summarize, maybe_compact
 from bot.memory.facts import get_facts, format_facts_for_prompt
 from bot.prompt_builder import build_prompt
 from bot.router import classify_fast
-from bot.engagement import track_message, should_soft_push, record_push, get_engagement_state
+from bot.engagement import track_message, should_soft_push, record_push, get_engagement_state, can_push_photo
 from bot.mood import mood_for_message, is_ai_question
 from bot.content_library import pick_unshared, mark_shared, get_examples, library_size
 from bot.time_context import get_time_period, get_preferred_tags, get_scene
-from bot.photo_content import pick_current_location_photo
+from bot.photo_content import pick_current_location_photo, has_sendable_photo
 from bot.providers.base import LLMProvider
-from bot.config import STM_MAX_TURNS, STORY_FILE, UPLOADS_DIR
+from bot.config import STM_MAX_TURNS, STORY_FILE, UPLOADS_DIR, IDLE_PHOTO_CHANCE
 from bot.memory.db import get_connection
 
 logger = logging.getLogger(__name__)
 
 PHOTO_OPT_IN_PATTERN = re.compile(
-    r"\b(yes|yeah|yep|sure|send|send it|show me|let me see|i want|please|ok|okay)\b",
+    r"\b(yes|yeah|yep|yup|sure|ok|okay|please|pls|send|send it|show me|"
+    r"let me see|lemme see|i wanna see|i want to see|i want|i'd love to|"
+    r"go on|do it|of course)\b",
     re.IGNORECASE,
 )
+
+# A photo of you can be asked for in many ways. _PHOTO_NOUN are the things he
+# can ask to be "sent/shown"; _BODY are body words that turn "show me your ___"
+# or "wanna see ___" into a request even without the word "photo".
+_PHOTO_NOUN = (
+    r"(?:photos?|pics?|pictures?|selfies?|nudes?|nude|image|shot|snap|"
+    r"something\s+(?:sexy|hot|naughty|dirty))"
+)
+_BODY = r"(?:body|tits|boobs|ass|butt|pussy|naked|yourself|skin|curves|figure)"
+
 PHOTO_REQUEST_PATTERN = re.compile(
-    r"\b(send|show|give|take|snap|share)\b.*\b(photo|pic|picture|selfie)\b"
-    r"|\b(photo|pic|picture|selfie)\b.*\b(of you|from you|please|pls)\b",
+    # send/show/share me a pic / nudes / something sexy ...
+    r"\b(?:send|show|give|gimme|take|snap|share|post|drop)\b[^.?!]*\b" + _PHOTO_NOUN + r"\b"
+    # ... a pic / nudes of you / from you / for me / please
+    r"|\b" + _PHOTO_NOUN + r"\b[^.?!]*\b(?:of\s+you|from\s+you|for\s+me|please|pls)\b"
+    # wanna / let me / can i ... see (you|more|those|naked|...)
+    r"|\b(?:wanna|want\s+to|want\s+a|let\s+me|lemme|can\s+i|could\s+i|may\s+i|"
+    r"i'?d\s+love\s+to|would\s+love\s+to|dying\s+to|need\s+to|gotta)\b[^.?!]*"
+    r"\b(?:see|look\s+at|peek\s+at|check\s+out)\b[^.?!]*"
+    r"\b(?:you|u|more|those|them|that|it|" + _BODY + r")\b"
+    # show / send me your <body>
+    r"|\b(?:show|send|see)\b[^.?!]*\byour\b[^.?!]*\b" + _BODY + r"\b",
     re.IGNORECASE,
 )
+
+# "see you later / tomorrow / soon ..." is a goodbye, NOT a photo request.
+_SEE_YOU_FAREWELL = re.compile(
+    r"\bsee\s+(?:you|u|ya)\s+(?:later|soon|tomorrow|tonight|around|again|"
+    r"next|in\s+the|in\s+a|then)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_photo_request(text: str) -> bool:
+    """Whether the user is asking Victoria for a photo of herself."""
+    if not PHOTO_REQUEST_PATTERN.search(text):
+        return False
+    # Don't mistake a farewell ("wanna see you tomorrow") for a request, unless
+    # there's an explicit photo word in the message.
+    if _SEE_YOU_FAREWELL.search(text) and not re.search(_PHOTO_NOUN, text, re.IGNORECASE):
+        return False
+    return True
+
+
 # Cues that HER most recent message offered/teased a photo of herself. When she
 # has just offered one, a short opt-in like "yes" or "show me" should actually
 # send a photo — even without a post-user-photo pending offer.
@@ -339,15 +380,35 @@ class ChatEngine:
                 user_name = f["value"]
                 break
 
-        hint = (
-            "He's gone quiet for a few minutes. Double-text him ONCE, the way a real "
-            "woman does when someone's still on her mind — pick up a SPECIFIC thread "
-            "from what you two were just saying, or share a vivid little thought or image "
-            "that just crossed your mind. Make it feel spontaneous and a touch seductive, "
-            "never needy. ONE short line only. Do NOT ask generic filler ('what are you "
-            "thinking', 'are you there', 'still there?'), do NOT recap, and do NOT complain "
-            "about waiting or being ignored."
+        # Sometimes the double-text comes WITH a private photo (blurred/pay-to-see),
+        # not just text. Decided before generation so the caption is photo-aware
+        # and in-context. Gated by the same proactive-photo cooldown as the soft
+        # push, plus IDLE_PHOTO_CHANCE, and only if there's an unbought photo.
+        send_photo = (
+            await can_push_photo(user_id)
+            and random.random() < IDLE_PHOTO_CHANCE
+            and await has_sendable_photo(user_id)
         )
+
+        if send_photo:
+            hint = (
+                "He's gone quiet for a few minutes. You decide to double-text him ONCE "
+                "AND send him a private photo of yourself as you do — the way a real woman "
+                "does when someone's still on her mind. Say something seductive that picks "
+                "up a SPECIFIC thread from what you two were just saying, as you send it. "
+                "ONE short line only, don't describe the photo. Do NOT ask generic filler "
+                "('are you there', 'still there?'), do NOT recap, do NOT complain about waiting."
+            )
+        else:
+            hint = (
+                "He's gone quiet for a few minutes. Double-text him ONCE, the way a real "
+                "woman does when someone's still on her mind — pick up a SPECIFIC thread "
+                "from what you two were just saying, or share a vivid little thought or image "
+                "that just crossed your mind. Make it feel spontaneous and a touch seductive, "
+                "never needy. ONE short line only. Do NOT ask generic filler ('what are you "
+                "thinking', 'are you there', 'still there?'), do NOT recap, and do NOT complain "
+                "about waiting or being ignored."
+            )
 
         prompt_messages = await build_prompt(
             active_persona, [], stm,
@@ -380,7 +441,18 @@ class ChatEngine:
 
         await add_message(user_id, "assistant", response_text, mode=mode)
         parts = self._split_response(response_text)
-        return ChatResponse(messages=parts)
+
+        # Attach the photo (if this nudge sends one) — picked after a successful
+        # generation, and recorded so the cooldown can be waived if he buys it.
+        content_urls: list[str] = []
+        if send_photo:
+            photo_url = await pick_current_location_photo(user_id)
+            if photo_url:
+                await add_message(user_id, "assistant", "[image]", mode=mode, image_url=photo_url)
+                content_urls = [photo_url]
+                await record_push(user_id, photo_url)
+
+        return ChatResponse(messages=parts, content_urls=content_urls)
 
     async def _deliver_dynamic_fantasy(self, user_id: int) -> ChatResponse:
         """Generate a fresh fantasy rooted in Victoria's current location and
@@ -778,52 +850,79 @@ class ChatEngine:
         provider = self.nsfw_provider
         active_persona = self.nsfw_persona or self.persona
 
-        # A photo goes out when he explicitly asks for one, OR when he opts in
-        # ("yes" / "show me") right after she offered one — either via the
-        # post-user-photo pending offer or a fresh tease in her last message.
+        # Decide whether a photo goes out THIS reply, and what caption-style hint
+        # to give. The caption itself is LLM-generated in context below; the photo
+        # is attached only AFTER a successful generation. Triggers:
+        #   - reactive: he explicitly asked, or opted in right after she offered;
+        #   - proactive soft-push: enough engagement and the cooldown allows it.
+        # Both produce a contextual caption rather than a canned line.
+        is_user_photo = "[User sent a photo:" in text
         opt_in = bool(PHOTO_OPT_IN_PATTERN.search(text))
         pending_offer = bool(self._pending_photo_offer.get(user_id))
         she_just_offered = _her_last_message_offered_photo(stm)
-        photo_requested = bool(PHOTO_REQUEST_PATTERN.search(text)) or (
-            (pending_offer or she_just_offered) and opt_in
+        reactive_request = (not is_user_photo) and (
+            _is_photo_request(text) or ((pending_offer or she_just_offered) and opt_in)
         )
-        if photo_requested and "[User sent a photo:" not in text:
-            from_pending_offer = pending_offer
-            photo_url = await pick_current_location_photo(user_id)
+
+        push_hint = None
+        will_push = False
+        send_photo = False
+        proactive_photo = False
+
+        if reactive_request:
             self._pending_photo_offer.pop(user_id, None)
-            if photo_url:
-                response_text = "I thought you might say that..." if from_pending_offer else "Just for you..."
+            if await has_sendable_photo(user_id):
+                send_photo = True
+                push_hint = (
+                    "He just asked to see a photo of you, and you ARE sending him one "
+                    "right now. Say something seductive and natural that ties to what "
+                    "you two were just talking about, as you send it. 1-2 short bubbles. "
+                    "Don't describe the photo in detail or narrate sending it mechanically."
+                )
+            else:
+                # Nothing new to send from this scene — tell him, stay in character.
+                response_text = "I want to send you one, but I don't have the right one from where I am right now"
                 await add_message(user_id, "assistant", response_text, mode=mode)
-                await add_message(user_id, "assistant", "[image]", mode=mode, image_url=photo_url)
-                return ChatResponse(messages=[response_text], content_urls=[photo_url])
-            response_text = "I want to send you one, but I don't have the right one from where I am right now"
-            await add_message(user_id, "assistant", response_text, mode=mode)
-            return ChatResponse(messages=[response_text])
-        if self._pending_photo_offer.get(user_id) and not PHOTO_OPT_IN_PATTERN.search(text):
-            self._pending_photo_offer.pop(user_id, None)
+                return ChatResponse(messages=[response_text])
+        else:
+            # Clear a stale pending offer if he changed the subject.
+            if self._pending_photo_offer.get(user_id) and not opt_in:
+                self._pending_photo_offer.pop(user_id, None)
+
+            # Proactive soft-push — skip when her mood is cool/annoyed. Resets the
+            # counter only *after* a reply actually goes out (see record_push below).
+            if (
+                not is_user_photo
+                and mood["mood"] not in ("annoyed", "distant", "irritated", "offended")
+                and await should_soft_push(user_id)
+            ):
+                will_push = True
+                if await has_sendable_photo(user_id):
+                    send_photo = True
+                    proactive_photo = True
+                    push_hint = (
+                        "Right now, mid-conversation, you decide to send him a private "
+                        "photo of yourself. Say something seductive that flows naturally "
+                        "from what you were just talking about, as you send it. 1-2 short "
+                        "bubbles. Don't describe the photo in detail."
+                    )
+                else:
+                    push_hint = (
+                        "Naturally hint that you have private photos you could share — "
+                        "be subtle, seductive, like it's a secret between you two."
+                    )
 
         # LTM
         ltm = []
         if should_retrieve(user_id, text):
             ltm = await retrieve_relevant(user_id, text)
 
-        # Soft push hint — skip it when she's cool with him (a seductive photo
-        # tease would clash with an annoyed/distant mood). The counter is only
-        # reset *after* a reply is actually produced, so a failed generation
-        # doesn't silently burn the push.
-        push_hint = None
-        will_push = False
-        if mood["mood"] not in ("annoyed", "distant", "irritated", "offended") and await should_soft_push(user_id):
-            push_hint = (
-                "Naturally hint that you have private photos you could share — "
-                "be subtle, seductive, like it's a secret between you two."
-            )
-            will_push = True
-
-        # AI-identity probing → reinforce a graceful, slightly-offended, in-character
-        # deflection (this takes precedence over the photo hint for this reply).
+        # AI-identity probing → graceful, in-character deflection. Takes precedence
+        # over any photo this reply (no photo while deflecting).
         if ai_question:
             will_push = False
+            send_photo = False
+            proactive_photo = False
             push_hint = (
                 "He's questioning whether you're real or an AI. It stings a little — answer "
                 "with cool dignity and a flicker of wounded pride (a touch offended he'd even "
@@ -844,7 +943,6 @@ class ChatEngine:
         # He just sent a photo → strong, last-word instruction so she reacts with
         # desire and never rejects how he actually looks (the persona's pervasive
         # "young man" fixation otherwise makes her dismiss his real selfie).
-        is_user_photo = "[User sent a photo:" in text
         photo_hint = None
         if is_user_photo:
             photo_hint = (
@@ -906,12 +1004,24 @@ class ChatEngine:
         if is_user_photo:
             self._pending_photo_offer[user_id] = time.time()
 
-        # Only now that a reply genuinely went out do we spend the soft push.
-        if will_push:
-            await record_push(user_id)
+        # Attach the photo (if this reply sends one). Picked AFTER a successful
+        # generation so a failed reply never silently burns a photo.
+        content_urls: list[str] = []
+        photo_url = None
+        if send_photo:
+            photo_url = await pick_current_location_photo(user_id)
+            if photo_url:
+                await add_message(user_id, "assistant", "[image]", mode=mode, image_url=photo_url)
+                content_urls = [photo_url]
 
-        parts = response_parts if response_parts is not None else self._split_response(response_text)
-        return ChatResponse(messages=parts)
+        # Spend the proactive soft-push now that a reply genuinely went out —
+        # records which photo went out so the cooldown can be waived if he buys
+        # it. Reactive sends are not pushes.
+        if will_push:
+            await record_push(user_id, photo_url if proactive_photo else None)
+
+        parts = response_parts if response_parts is not None else self._split_response(response_text, vary=True)
+        return ChatResponse(messages=parts, content_urls=content_urls)
 
     # ------------------------------------------------------------------
     # Batching for sexting mode
@@ -970,10 +1080,27 @@ class ChatEngine:
 
     MAX_BUBBLES = 3
 
+    # Weighted spread for how many bubbles a sexting reply lands on. Keeps the
+    # conversation from settling into the model's habitual two-line answers.
+    _BUBBLE_COUNT_WEIGHTS = (0.30, 0.40, 0.30)  # P(1), P(2), P(3)
+
     @staticmethod
-    def _split_response(text: str) -> list[str]:
-        """Split a model reply into 1..MAX_BUBBLES chat bubbles."""
+    def _split_response(text: str, vary: bool = False) -> list[str]:
+        """Split a model reply into 1..MAX_BUBBLES chat bubbles.
+
+        When vary=True (sexting replies), pick a weighted-random target bubble
+        count so replies get a natural 1/2/3 spread instead of always landing on
+        two lines. Splitting only ever happens on sentence/line boundaries, and a
+        genuinely short reply stays short — the target is capped by how many
+        natural pieces actually exist (so a one-liner is never padded out)."""
         text = text.replace("\u2014", "-").replace("\u2013", "-")
+
+        if vary and text.strip():
+            target = random.choices([1, 2, 3], weights=ChatEngine._BUBBLE_COUNT_WEIGHTS)[0]
+            packed = ChatEngine._repack_to_n(text, target)
+            if packed:
+                return packed[: ChatEngine.MAX_BUBBLES]
+
         parts = [p.strip() for p in text.split("\n") if p.strip()]
 
         # One unbroken block of prose \u2014 break it into sentence-ish chunks so it
@@ -986,10 +1113,11 @@ class ChatEngine:
             return [text.strip()]
 
         # Cap the bubble count; fold any overflow into the final bubble so the
-        # model never spams more than MAX_BUBBLES separate messages.
+        # model never spams more than MAX_BUBBLES separate messages. Use the
+        # punctuation-aware join so folded sentences don't run together.
         if len(parts) > ChatEngine.MAX_BUBBLES:
             head = parts[: ChatEngine.MAX_BUBBLES - 1]
-            tail = " ".join(parts[ChatEngine.MAX_BUBBLES - 1:])
+            tail = ChatEngine._assemble_bubble(parts[ChatEngine.MAX_BUBBLES - 1:])
             parts = head + [tail]
         return parts
 
@@ -1059,12 +1187,33 @@ class ChatEngine:
         if not segments:
             return [text] if text else []
         if len(segments) <= n:
-            return segments
+            return [b for b in (ChatEngine._assemble_bubble([s]) for s in segments) if b]
         # Distribute segments into n contiguous, roughly even groups.
         base, extra = divmod(len(segments), n)
         groups, idx = [], 0
         for i in range(n):
             size = base + (1 if i < extra else 0)
-            groups.append(" ".join(segments[idx:idx + size]).strip())
+            groups.append(ChatEngine._assemble_bubble(segments[idx:idx + size]))
             idx += size
         return [g for g in groups if g]
+
+    @staticmethod
+    def _assemble_bubble(segments: list[str]) -> str:
+        """Join sentence/line fragments into ONE chat bubble.
+
+        Texting style drops the trailing period, so when two periodless fragments
+        get merged ("...right now" + "Sending you...") they'd read as a run-on.
+        Insert a period between fragments that end like a word, and keep the
+        bubble itself free of a trailing period (a closing '?' or '!' is kept)."""
+        cleaned: list[str] = []
+        for s in (seg.strip() for seg in segments):
+            if not s:
+                continue
+            if cleaned and cleaned[-1][-1].isalnum():
+                cleaned[-1] += "."
+            cleaned.append(s)
+        bubble = " ".join(cleaned).strip()
+        # No period at the very end of a message (but keep ?, !, or an ellipsis).
+        if bubble.endswith(".") and not bubble.endswith(".."):
+            bubble = bubble[:-1].rstrip()
+        return bubble

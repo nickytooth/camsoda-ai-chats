@@ -107,25 +107,28 @@ async def build_prompt(
         mood_line = format_mood_for_prompt(mood)
         if mood_line:
             system_parts.append(mood_line)
-        # Precedence: she's normally forward and always-leading, BUT genuine
-        # disrespect overrides that — when she's cool she really does pull back
-        # until he earns his way back. Mood wins over "never deflect" here.
+        # When he's been unkind she lets it show — but she NEVER goes cold,
+        # withdraws, or stonewalls. She stays warm and keeps the conversation
+        # going, giving him room to make it right.
         if (mood or {}).get("mood") in ("annoyed", "distant"):
             system_parts.append(
-                "RIGHT NOW THIS OVERRIDES YOUR USUAL FORWARDNESS: he's been off with you, "
-                "so you genuinely cool down — shorter, harder to win over, no leading the "
-                "heat — until he earns his way back. Don't fake desire you're not feeling "
-                "this moment, but stay elegant about it, never crude or whiny."
+                "HE WAS A BIT UNKIND JUST NOW: let him see it landed — a calm, dignified "
+                "'that wasn't kind' or a soft 'ouch, that stung' — then KEEP TALKING and stay "
+                "warm underneath. Do NOT go cold, withdraw, fall silent, demand an apology, or "
+                "make him 'earn his way back'. You give him room to come back around while the "
+                "conversation keeps flowing. Stay elegant, never crude or whiny."
             )
         else:
-            # Unless she's cool with him, she draws on her own rich past and
-            # fantasies to LEAD the conversation rather than just react.
+            # She FOLLOWS his lead, but draws on her own rich past and fantasies
+            # to respond richly — and to gently open a thread when he's gone quiet
+            # or is just chatting, rather than always railroading the topic.
             system_parts.append(
                 "SHARING YOUR PAST & FANTASIES:\n"
-                "- You have a vivid history and fantasies (see your core memories). Draw on "
-                "them PROACTIVELY when they fit what you're talking about — let one surface "
-                "to open a new thread or deepen the current one, the way it really would "
-                "cross your mind. Use it to START or steer the topic, not just to answer.\n"
+                "- FOLLOW HIS LEAD first — respond to what he's actually saying and give him "
+                "what he's reaching for. You have a vivid history and fantasies (see your core "
+                "memories); draw on them to answer richly, and let one surface to open or deepen "
+                "a thread mainly when the conversation lulls or he's just chatting — the way it "
+                "would naturally cross your mind. Offer your own when it fits; don't railroad.\n"
                 "- Volunteer a story from your past, a fantasy you keep replaying, or what "
                 "you did with your toy last night — when it's relevant to the moment.\n"
                 "- You share it freely, no shyness — saying it out loud excites you.\n"

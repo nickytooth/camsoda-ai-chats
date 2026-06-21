@@ -32,6 +32,11 @@ STARTING_TOKENS = int(os.getenv("STARTING_TOKENS", "1000"))
 PHOTO_UNLOCK_COST = int(os.getenv("PHOTO_UNLOCK_COST", "10"))
 TOPUP_AMOUNT = int(os.getenv("TOPUP_AMOUNT", "1000"))
 
+# Probability (0..1) that an idle re-engagement double-text also attaches a
+# blurred selfie, instead of being text-only. Gated by the same proactive-photo
+# cooldown as the soft push (see bot/engagement.can_push_photo).
+IDLE_PHOTO_CHANCE = float(os.getenv("IDLE_PHOTO_CHANCE", "0.5"))
+
 # Where photos the USER uploads are stored on disk and served from (so they
 # survive a page reload / history refresh). Lives under data/ (gitignored).
 UPLOADS_DIR = BASE_DIR / os.getenv("UPLOADS_DIR", "data/uploads")
