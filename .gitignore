@@ -9,7 +9,6 @@ __pycache__/
 *.pyo
 .venv/
 venv/
-content/
 content_index.json
 check_*.py
 
