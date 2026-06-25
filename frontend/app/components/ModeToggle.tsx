@@ -12,15 +12,16 @@ export default function ModeToggle({ mode, onSwitch }: Props) {
     <div className="flex bg-[#1a1a2e] rounded-lg p-0.5 gap-0.5">
       <button
         type="button"
-        disabled
-        title="Story mode — coming soon"
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium text-[var(--muted)] opacity-50 cursor-not-allowed"
+        onClick={() => onSwitch("story")}
+        title="Story mode — Caught"
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition-all ${
+          mode === "story"
+            ? "bg-gradient-to-r from-rose-600 to-pink-500 text-white shadow-md"
+            : "text-[var(--muted)] hover:text-white"
+        }`}
       >
         <BookOpen size={14} />
         Story
-        <span className="ml-0.5 text-[9px] uppercase tracking-wide px-1 py-0.5 rounded bg-white/10 text-[var(--muted)]">
-          soon
-        </span>
       </button>
       <button
         onClick={() => onSwitch("sexting")}

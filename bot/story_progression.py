@@ -1,155 +1,111 @@
 """
-Story progression scoring — mirrors the Sexting intimacy system for Story mode.
+Story progression — a simple 3-level heat meter for Story mode.
 
-Instead of a single yes/no check (which made chapters fly by after one
-message), each exchange is scored 0-10 for how much it advances the chapter's
-goal. A chapter advances only once enough exchanges have happened AND the
-accumulated score crosses a threshold (or the goal is clearly, fully met).
+The "Caught" scene runs on a step counter `heat` 0..MAX_HEAT (3 levels x
+STEPS_PER_LEVEL steps). Each NON-rude exchange advances the needle by one step;
+a rude / insulting message advances nothing (she sets a boundary instead). The
+level gates how far she'll go:
+
+    Angry (heat 0-4)  ->  Flirty (heat 5-9)  ->  Hot (heat 10-15, explicit)
+
+There is no cool-down: the needle only ever rises (or holds on a rude turn).
 """
 
-import json
 import logging
-import time
 
 from bot.memory.db import get_connection
 
 logger = logging.getLogger(__name__)
 
-# Pacing thresholds (analogous to intimacy STAGE_*_MIN_* constants)
-STORY_MIN_MESSAGES_PER_CHAPTER = 6   # minimum exchanges before a normal advance
-STORY_ADVANCE_SCORE = 22             # accumulated advancement needed to move on
-STORY_TRIGGER_MIN_MESSAGES = 3       # allow an early advance once goal is clearly met
+STEPS_PER_LEVEL = 5
+MAX_HEAT = 15  # 3 levels x STEPS_PER_LEVEL
 
-EVAL_PROMPT = """You are pacing an interactive roleplay story. Score how much the LATEST exchange moves the current chapter toward its goal.
+# One quick yes/no classification per story turn. Only a direct insult/abuse
+# blocks progress; ordinary (even bland or clumsy) messages count as a step.
+RUDE_PROMPT = """In an adult roleplay, a man is talking to a woman. Decide if his LATEST message is RUDE — a direct insult, name-calling, demeaning slur, threat, or genuinely abusive/hostile language aimed at her.
 
-Chapter: {title}
-Progression goal: "{trigger}"
+Crude flirting, being forward, awkwardness, or sexual interest is NOT rude. Only hostile/insulting/abusive language is rude.
 
-User: "{user_msg}"
-Character: "{response}"
+His message: "{msg}"
 
-Return ONLY a JSON object:
-{{
-  "advancement": <int 0 to 10>,
-  "trigger_met": <true or false>,
-  "reasoning": "<one short sentence>"
-}}
-
-Scoring guide:
-- 0-2: stalling, small talk, repetition, off-topic
-- 3-6: meaningful progress, tension building, getting closer
-- 7-10: a major story beat lands
-- trigger_met: true ONLY if the progression goal is clearly and fully satisfied right now.
-"""
+Answer with ONLY one word: YES (rude) or NO (not rude)."""
 
 
-async def _ensure_columns() -> None:
-    """Add scoring columns to story_progress if an older DB is missing them."""
-    conn = await get_connection()
-    try:
-        cursor = await conn.execute("PRAGMA table_info(story_progress)")
-        cols = {row["name"] for row in await cursor.fetchall()}
-        if "chapter_score" not in cols:
-            await conn.execute(
-                "ALTER TABLE story_progress ADD COLUMN chapter_score INTEGER NOT NULL DEFAULT 0"
-            )
-        if "chapter_messages" not in cols:
-            await conn.execute(
-                "ALTER TABLE story_progress ADD COLUMN chapter_messages INTEGER NOT NULL DEFAULT 0"
-            )
-        await conn.commit()
-    finally:
-        await conn.close()
+def level_for(heat: int) -> tuple[int, str]:
+    """Map a heat value (0..MAX_HEAT) to (level_number 1-3, label)."""
+    if heat <= 4:
+        return 1, "Angry"
+    if heat <= 9:
+        return 2, "Flirty"
+    return 3, "Hot"
 
 
-async def get_progress(user_id: int) -> dict:
-    """Return {chapter, score, messages} for the current chapter."""
-    await _ensure_columns()
+def _state(heat: int) -> dict:
+    heat = max(0, min(MAX_HEAT, int(heat)))
+    level, label = level_for(heat)
+    return {
+        "heat": heat,
+        "level": level,
+        "label": label,
+        "max_heat": MAX_HEAT,
+        "climax": heat >= MAX_HEAT,
+        # explicit content unlocks at the Hot level
+        "explicit": heat >= 10,
+    }
+
+
+async def get_heat(user_id: int) -> dict:
+    """Return the current heat state {heat, level, label, max_heat, climax, explicit}."""
     conn = await get_connection()
     try:
         cursor = await conn.execute(
-            "SELECT chapter, chapter_score, chapter_messages "
-            "FROM story_progress WHERE user_id = ?",
-            (user_id,),
+            "SELECT heat FROM story_progress WHERE user_id = ?", (user_id,)
         )
         row = await cursor.fetchone()
-        if row:
-            return {
-                "chapter": row["chapter"],
-                "score": row["chapter_score"],
-                "messages": row["chapter_messages"],
-            }
-        return {"chapter": 1, "score": 0, "messages": 0}
+        heat = int(row["heat"]) if row and row["heat"] is not None else 0
     finally:
         await conn.close()
+    return _state(heat)
 
 
-async def record_turn(
-    user_id: int,
-    chapter: int,
-    user_msg: str,
-    response: str,
-    chapter_meta: dict,
-    llm_call,
-) -> bool:
-    """
-    Score the latest exchange, accumulate progress, and decide whether the
-    chapter should advance. Returns True if the caller should advance the chapter.
-    Does NOT change the chapter number itself.
-    """
-    await _ensure_columns()
-
-    state = await get_progress(user_id)
-    score = state["score"]
-    messages = state["messages"]
-
-    prompt = EVAL_PROMPT.format(
-        title=chapter_meta.get("title", ""),
-        trigger=chapter_meta.get("progression_trigger", ""),
-        user_msg=user_msg[:500],
-        response=response[:800],
-    )
-
-    advancement = 0
-    trigger_met = False
+async def is_rude(user_msg: str, llm_call) -> bool:
+    """One fast classification: is his message a direct insult/abuse? On any
+    error, default to False (treat as not rude) so progress never wrongly stalls."""
+    if not (user_msg or "").strip():
+        return False
     try:
-        raw = (await llm_call(prompt)).strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
-        data = json.loads(raw)
-        advancement = max(0, min(10, int(data.get("advancement", 0))))
-        trigger_met = bool(data.get("trigger_met", False))
-        logger.info(
-            "Story eval user %d ch%d: +%d (trigger_met=%s) | %s",
-            user_id, chapter, advancement, trigger_met, data.get("reasoning", ""),
-        )
+        out = (await llm_call(RUDE_PROMPT.format(msg=user_msg[:500]))).strip().lower()
+        return out.startswith("y")
     except Exception as e:
-        logger.warning("Story eval failed for user %d: %s", user_id, e)
-        advancement = 1  # small nudge so progression never fully stalls
+        logger.warning("Story rude-check failed: %s", e)
+        return False
 
-    new_score = score + advancement
-    new_messages = messages + 1
 
-    should_advance = (
-        (new_messages >= STORY_MIN_MESSAGES_PER_CHAPTER and new_score >= STORY_ADVANCE_SCORE)
-        or (trigger_met and new_messages >= STORY_TRIGGER_MIN_MESSAGES)
-    )
+async def record_step(user_id: int, rude: bool) -> dict:
+    """Advance the needle by one step unless the turn was rude, persist, and
+    return the new heat state. Never decreases; caps at MAX_HEAT."""
+    current = await get_heat(user_id)
+    heat = current["heat"]
+    if not rude:
+        heat = min(MAX_HEAT, heat + 1)
 
-    # Persist accumulated progress (ensure the row exists)
     conn = await get_connection()
     try:
         await conn.execute(
             """
-            INSERT INTO story_progress (user_id, chapter, scene, chapter_score, chapter_messages)
-            VALUES (?, ?, 0, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                chapter_score = ?,
-                chapter_messages = ?
+            INSERT INTO story_progress (user_id, chapter, scene, heat)
+            VALUES (?, 1, 0, ?)
+            ON CONFLICT(user_id) DO UPDATE SET heat = ?
             """,
-            (user_id, chapter, new_score, new_messages, new_score, new_messages),
+            (user_id, heat, heat),
         )
         await conn.commit()
     finally:
         await conn.close()
 
-    return should_advance
+    state = _state(heat)
+    logger.info(
+        "Story heat user %d: %d/%d (%s)%s",
+        user_id, heat, MAX_HEAT, state["label"], " [rude, held]" if rude else "",
+    )
+    return state

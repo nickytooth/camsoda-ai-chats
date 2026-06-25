@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS story_progress (
     chapter_score INTEGER NOT NULL DEFAULT 0,
     chapter_messages INTEGER NOT NULL DEFAULT 0
 );
+ALTER TABLE story_progress ADD COLUMN IF NOT EXISTS heat INTEGER NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS engagement_state (
     user_id BIGINT PRIMARY KEY,
     nsfw_count INTEGER NOT NULL DEFAULT 0,

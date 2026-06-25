@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { API_BASE, WS_BASE } from "../api";
+import type { StoryHeat } from "../components/StoryMeter";
 
 export interface ChatMessage {
   id: string;
@@ -36,6 +37,7 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
   const [isConnected, setIsConnected] = useState(false);
   const [isWaitingStory, setIsWaitingStory] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
+  const [storyHeat, setStoryHeat] = useState<StoryHeat | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<NodeJS.Timeout | null>(null);
   const idCounter = useRef(0);
@@ -153,6 +155,16 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
             photoUrl: data.photo_url || data.url,
           };
           setMessages((prev) => [...prev, imgMsg]);
+          break;
+        case "story_heat":
+          setStoryHeat({
+            heat: data.heat,
+            level: data.level,
+            label: data.label,
+            max_heat: data.max_heat,
+            climax: data.climax,
+            explicit: data.explicit,
+          });
           break;
       }
     };
@@ -304,6 +316,19 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     }
   }, [userId]);
 
+  // Story heat meter — fetched on entering story mode and refreshed after each
+  // story turn (the backend also pushes it over the socket).
+  const refreshStoryHeat = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/story/progress?user_id=${userId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setStoryHeat(data);
+    } catch (e) {
+      console.error("Story progress fetch failed:", e);
+    }
+  }, [userId]);
+
   // Switch mode
   const switchMode = useCallback(
     (newMode: "sexting" | "story") => {
@@ -311,8 +336,9 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
       setIsTyping(false);
       setIsWaitingStory(false);
       loadHistory(newMode);
+      if (newMode === "story") refreshStoryHeat();
     },
-    [loadHistory]
+    [loadHistory, refreshStoryHeat]
   );
 
   // Connect and load history. connect/loadHistory are memoised on the
@@ -330,6 +356,19 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connect, loadHistory, refreshBalance]);
 
+  // Re-fetch the balance whenever the socket (re)connects. The initial mount
+  // fetch can fail if the backend is momentarily down (e.g. a restart); without
+  // this, the balance would stay stuck on "…" until a full page reload.
+  useEffect(() => {
+    if (isConnected) refreshBalance();
+  }, [isConnected, refreshBalance]);
+
+  // Keep the story meter current whenever the user is in story mode (initial
+  // load and on reconnect).
+  useEffect(() => {
+    if (isConnected && mode === "story") refreshStoryHeat();
+  }, [isConnected, mode, refreshStoryHeat]);
+
   return {
     messages,
     isTyping,
@@ -337,6 +376,7 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     mode,
     isWaitingStory,
     balance,
+    storyHeat,
     sendMessage,
     switchMode,
     suggestReply,

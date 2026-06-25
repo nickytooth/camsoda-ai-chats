@@ -15,30 +15,63 @@ def _load_story() -> dict | None:
         return yaml.safe_load(f)
 
 
-def _get_story_context(story_data: dict, chapter: int) -> str:
-    """Build story context for the current chapter."""
-    chapters = story_data.get("chapters", [])
+_STORY_STYLE_DIRECTIVE = (
+    "STORY STYLE — this is an interactive roleplay scene, NOT a text chat:\n"
+    "- Reply as ONE message (a single bubble). Do NOT split into multiple "
+    "messages and do NOT use blank lines to create separate bubbles.\n"
+    "- Keep it SHORT — about 1 to 3 sentences.\n"
+    "- Weave in brief *italic* stage directions for her body language and "
+    "reactions (a few words each), e.g. *rolls her eyes*, *chuckles softly, "
+    "still flustered*, *raises an eyebrow, smirking*. Use 1-2 per reply.\n"
+    "- Stay fully in character and inside the scene: react to what he just did "
+    "or said, and let the moment move only as far as her current state allows.\n"
+    "- Use his name occasionally if you know it."
+)
+
+_STORY_RUDE_DIRECTIVE = (
+    "HE WAS JUST RUDE / INSULTING: he crossed a line this turn. React with calm, "
+    "firm displeasure — make it clear that is NOT okay and you won't tolerate "
+    "being spoken to like that. Do not melt, flirt, or warm up this turn, but "
+    "stay in character and DON'T end or break the scene. He's earned no ground."
+)
+
+
+def _get_story_context(story_data: dict, level_info: dict, rude: bool = False) -> str:
+    """Build the story context for the current heat level.
+
+    `level_info` is the heat state from bot.story_progression.get_heat /
+    record_step ({heat, level, label, max_heat, ...}). The active level's
+    `behavior` text is what actually gates how far Victoria will go.
+    """
+    heat = int(level_info.get("heat", 0))
+    max_heat = int(level_info.get("max_heat", 15))
+    levels = story_data.get("levels", [])
+
     current = None
-    for ch in chapters:
-        if ch.get("id") == chapter:
-            current = ch
+    for lv in levels:
+        if heat <= int(lv.get("max", 9999)):
+            current = lv
             break
-    if not current:
-        current = chapters[0] if chapters else None
-    if not current:
+    if current is None and levels:
+        current = levels[-1]
+    if current is None:
         return ""
 
-    beats = "\n".join(f"- {b}" for b in current.get("narrative_beats", []))
-    return (
-        f"STORY MODE — Chapter {current['id']}: {current['title']}\n"
-        f"Setting: {current.get('setting', '')}\n"
-        f"Mood: {current.get('mood', '')}\n"
-        f"Summary: {current.get('summary', '').strip()}\n"
-        f"Key narrative beats to weave in naturally:\n{beats}\n\n"
-        f"Stay in character. Use *italic actions* for physical descriptions and actions. "
-        f"Drive the story forward while responding to the user's choices. "
-        f"Don't rush — let scenes breathe. Build tension."
-    )
+    meta = story_data.get("meta", {})
+    label = current.get("label", level_info.get("label", ""))
+    parts = [
+        f'STORY MODE — "{meta.get("title", "")}"',
+        f"Premise: {meta.get('premise', '').strip()}",
+        f"Setting: {story_data.get('setting', '').strip()}",
+        (
+            f"HER CURRENT STATE — {label} (heat {heat}/{max_heat}):\n"
+            f"{current.get('behavior', '').strip()}"
+        ),
+    ]
+    if rude:
+        parts.append(_STORY_RUDE_DIRECTIVE)
+    parts.append(_STORY_STYLE_DIRECTIVE)
+    return "\n\n".join(parts)
 
 
 async def build_prompt(
@@ -49,7 +82,8 @@ async def build_prompt(
     push_hint: str | None = None,
     user_name: str | None = None,
     facts_text: str | None = None,
-    story_chapter: int = 1,
+    story_level: dict | None = None,
+    story_rude: bool = False,
     mood: dict | None = None,
     last_seen_note: str | None = None,
     already_greeted: bool = False,
@@ -68,7 +102,7 @@ async def build_prompt(
     if mode == "story":
         story_data = _load_story()
         if story_data:
-            system_parts.append(_get_story_context(story_data, story_chapter))
+            system_parts.append(_get_story_context(story_data, story_level or {}, story_rude))
 
     # Texting style — sexting mode must read like a real chat, not prose
     if mode == "sexting":

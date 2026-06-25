@@ -7,6 +7,7 @@ import ChatInput from "./components/ChatInput";
 import StarterCards from "./components/StarterCards";
 import TypingIndicator from "./components/TypingIndicator";
 import ModeToggle from "./components/ModeToggle";
+import StoryMeter from "./components/StoryMeter";
 import ProfileSidebar from "./components/ProfileSidebar";
 import NameScreen from "./components/NameScreen";
 import { API_BASE } from "./api";
@@ -106,6 +107,7 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
     mode,
     isWaitingStory,
     balance,
+    storyHeat,
     sendMessage,
     switchMode,
     suggestReply,
@@ -195,6 +197,13 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
             </button>
           </div>
         </div>
+
+        {/* Story heat speedometer (story mode only) */}
+        {mode === "story" && (
+          <div className="bg-[#111118] border-b border-[var(--border)]">
+            <StoryMeter heat={storyHeat} />
+          </div>
+        )}
 
         {/* Messages */}
         <div

@@ -1,0 +1,132 @@
+"use client";
+
+import React from "react";
+
+export interface StoryHeat {
+  heat: number;
+  level: number;
+  label: string;
+  max_heat: number;
+  climax?: boolean;
+  explicit?: boolean;
+}
+
+interface Props {
+  heat?: StoryHeat | null;
+}
+
+// Geometry for a 180° gauge.
+const CX = 120;
+const CY = 116;
+const R = 92;
+const TAU = Math.PI / 180;
+
+// 0° = right, 90° = top, 180° = left.
+function polar(angleDeg: number, radius: number) {
+  const a = angleDeg * TAU;
+  return { x: CX + radius * Math.cos(a), y: CY - radius * Math.sin(a) };
+}
+
+// Arc from a1 to a2 (a1 > a2) along the top of the circle.
+function arcPath(a1: number, a2: number, radius: number) {
+  const p1 = polar(a1, radius);
+  const p2 = polar(a2, radius);
+  return `M ${p1.x} ${p1.y} A ${radius} ${radius} 0 0 1 ${p2.x} ${p2.y}`;
+}
+
+const ZONES = [
+  { label: "Angry", color: "#f87171", a1: 180, a2: 120 },
+  { label: "Flirty", color: "#f472b6", a1: 120, a2: 60 },
+  { label: "Hot", color: "#e879f9", a1: 60, a2: 0 },
+];
+
+export default function StoryMeter({ heat }: Props) {
+  const max = heat?.max_heat ?? 15;
+  const value = Math.max(0, Math.min(max, heat?.heat ?? 0));
+  const label = heat?.label ?? "Angry";
+  const level = heat?.level ?? 1;
+  const climax = !!heat?.climax;
+
+  const f = max > 0 ? value / max : 0;
+  const needleAngle = 180 - f * 180;
+  const tip = polar(needleAngle, R - 10);
+
+  // 15 step ticks (16 boundaries).
+  const ticks = Array.from({ length: max + 1 }, (_, i) => {
+    const tf = i / max;
+    const ang = 180 - tf * 180;
+    const inner = polar(ang, R - 14);
+    const outer = polar(ang, R - 4);
+    const reached = i <= value;
+    return { inner, outer, reached, key: i };
+  });
+
+  return (
+    <div className="flex flex-col items-center pt-3 pb-2 select-none">
+      <svg width={240} height={140} viewBox="0 0 240 140">
+        {/* Track */}
+        <path
+          d={arcPath(180, 0, R)}
+          fill="none"
+          stroke="#2a2a3c"
+          strokeWidth={14}
+          strokeLinecap="round"
+        />
+        {/* Colored zones */}
+        {ZONES.map((z, i) => {
+          const active = level === i + 1;
+          return (
+            <path
+              key={z.label}
+              d={arcPath(z.a1, z.a2, R)}
+              fill="none"
+              stroke={z.color}
+              strokeWidth={active ? 14 : 11}
+              strokeLinecap="butt"
+              opacity={active ? 1 : 0.35}
+            />
+          );
+        })}
+        {/* Step ticks */}
+        {ticks.map((t) => (
+          <line
+            key={t.key}
+            x1={t.inner.x}
+            y1={t.inner.y}
+            x2={t.outer.x}
+            y2={t.outer.y}
+            stroke={t.reached ? "#ffffff" : "#ffffff"}
+            strokeOpacity={t.reached ? 0.9 : 0.18}
+            strokeWidth={1.5}
+          />
+        ))}
+        {/* Needle */}
+        <line
+          x1={CX}
+          y1={CY}
+          x2={tip.x}
+          y2={tip.y}
+          stroke={climax ? "#e879f9" : "#ffffff"}
+          strokeWidth={3}
+          strokeLinecap="round"
+          style={{ transition: "all 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)" }}
+        />
+        <circle cx={CX} cy={CY} r={7} fill="#ffffff" />
+        <circle cx={CX} cy={CY} r={3.5} fill="#1a1a2e" />
+      </svg>
+
+      {/* Label */}
+      <div className="-mt-3 flex flex-col items-center gap-0.5">
+        <span
+          className="text-[15px] font-bold tracking-wide uppercase"
+          style={{ color: ZONES[level - 1]?.color ?? "#f87171" }}
+        >
+          {climax ? "Climax" : label}
+        </span>
+        <span className="text-[10px] text-[var(--muted)] uppercase tracking-widest">
+          Level {level} / 3
+        </span>
+      </div>
+    </div>
+  );
+}

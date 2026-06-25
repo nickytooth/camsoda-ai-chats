@@ -128,23 +128,17 @@ async def get_history(mode: str, user_id: int = Query(default=None)):
             await stm_add(user_id, "assistant", part, mode="sexting")
         messages = await get_all_messages(user_id, mode=mode)
 
-    # Seed opening narration for new story users (chapter 1 scene-setter)
+    # Seed opening narration for new story users (the "Caught" scene-setter)
     if mode == "story" and not messages and engine:
         from bot.memory.stm import add_message as stm_add
         from bot.config import STORY_FILE
         try:
             with open(str(STORY_FILE), "r", encoding="utf-8") as f:
                 story_data = yaml.safe_load(f)
-            ch1 = story_data.get("chapters", [{}])[0]
-            setting = ch1.get("setting", "")
-            first_beat = ch1.get("narrative_beats", [""])[0]
-            opening = (
-                f"*{setting}*\n\n"
-                f"*You push the door open without thinking. And there she is.*\n\n"
-                f"{first_beat}"
-            )
-            await stm_add(user_id, "assistant", opening, mode="story")
-            messages = await get_all_messages(user_id, mode=mode)
+            opening = (story_data.get("opening") or "").strip()
+            if opening:
+                await stm_add(user_id, "assistant", opening, mode="story")
+                messages = await get_all_messages(user_id, mode=mode)
         except Exception:
             logger.warning("Failed to seed story opening for user %d", user_id, exc_info=True)
 
@@ -172,14 +166,12 @@ async def get_history(mode: str, user_id: int = Query(default=None)):
     return {"mode": mode, "messages": out}
 
 
-@app.get("/api/story/chapter")
-async def get_story_chapter(user_id: int = Query(default=None)):
-    """Get current story chapter."""
-    if not engine:
-        return JSONResponse({"error": "Engine not ready"}, status_code=503)
+@app.get("/api/story/progress")
+async def get_story_progress(user_id: int = Query(default=None)):
+    """Current story heat-meter state: {heat, level, label, max_heat, climax, explicit}."""
+    from bot.story_progression import get_heat
     uid = user_id or DEFAULT_USER_ID
-    chapter = await engine.get_story_chapter(uid)
-    return {"chapter": chapter}
+    return await get_heat(uid)
 
 
 @app.get("/api/tokens")
@@ -472,9 +464,12 @@ async def websocket_chat(ws: WebSocket, user_id: int = Query(default=None), user
             logger.info("WS message from user %d [%s]: %s", user_id, mode, (text or "[image]")[:80])
 
             if mode == "story":
-                # Story mode: direct processing, one at a time
+                # Story mode: direct processing, one at a time (no batching).
                 response = await engine.process_message(user_id, text, mode="story", image_bytes=image_bytes)
                 await _send_response_with_typing(user_id, response, mode="story")
+                # Push the updated heat-meter state to the speedometer.
+                if getattr(response, "story_heat", None):
+                    await manager.send_json(user_id, {"type": "story_heat", **response.story_heat})
             else:
                 # Sexting mode: batched processing. Start the typing indicator
                 # right away so she looks like she's already typing while the

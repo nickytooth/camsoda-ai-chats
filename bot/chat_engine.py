@@ -79,6 +79,34 @@ def _is_photo_request(text: str) -> bool:
     return True
 
 
+# Coarse "is this even about a photo?" gate. The strict PHOTO_REQUEST_PATTERN is
+# deliberately tight (to avoid false positives), so it misses paraphrases, typos
+# and slang ("i want see a picture of u", "prove you're real", "lemme get a look
+# at u"). This loose cue decides whether a missed message is worth spending ONE
+# fast LLM call on to read intent semantically (see _llm_is_photo_request). It
+# only limits cost — the LLM is the actual decision-maker.
+_PHOTO_ADJACENT = re.compile(
+    r"\b(?:photos?|pics?|pictures?|selfies?|nudes?|nude|image|shot|snap|"
+    r"see|seein|seeing|look|lookin|looking|watch|view|peek|glimpse|show|"
+    r"send|prove|real)\b",
+    re.IGNORECASE,
+)
+
+
+def _photo_intent_candidate(text: str) -> bool:
+    """True when a message that FAILED the strict regex still looks photo-related
+    enough to be worth one semantic LLM check. Skips long messages (real requests
+    are short) and anything with no photo-adjacent cue, and never fires on a plain
+    farewell with no photo word."""
+    if len(text) > 160:
+        return False
+    if not _PHOTO_ADJACENT.search(text):
+        return False
+    if _SEE_YOU_FAREWELL.search(text) and not re.search(_PHOTO_NOUN, text, re.IGNORECASE):
+        return False
+    return True
+
+
 # Cues that HER most recent message offered/teased a photo of herself. When she
 # has just offered one, a short opt-in like "yes" or "show me" should actually
 # send a photo — even without a post-user-photo pending offer.
@@ -177,6 +205,9 @@ class ChatResponse:
     """Response from the chat engine."""
     messages: list[str] = field(default_factory=list)
     content_urls: list[str] = field(default_factory=list)
+    # Story mode only: the heat-meter state after this turn, so the WS layer can
+    # push it to the speedometer. None for sexting.
+    story_heat: dict | None = None
 
 
 def _format_last_seen(gap_seconds: float) -> str | None:
@@ -669,25 +700,6 @@ class ChatEngine:
         finally:
             await conn.close()
 
-    async def advance_story(self, user_id: int) -> int:
-        """Advance to next chapter, return new chapter number."""
-        import time
-        current = await self.get_story_chapter(user_id)
-        new_chapter = current + 1
-        conn = await get_connection()
-        try:
-            await conn.execute(
-                "INSERT INTO story_progress (user_id, chapter, scene, completed_at, chapter_score, chapter_messages) "
-                "VALUES (?, ?, 0, ?, 0, 0) "
-                "ON CONFLICT(user_id) DO UPDATE SET chapter = ?, completed_at = ?, "
-                "chapter_score = 0, chapter_messages = 0",
-                (user_id, new_chapter, time.time(), new_chapter, time.time()),
-            )
-            await conn.commit()
-        finally:
-            await conn.close()
-        return new_chapter
-
     # ------------------------------------------------------------------
     # Story mode — single message, Grok only
     # ------------------------------------------------------------------
@@ -723,73 +735,72 @@ class ChatEngine:
                 user_name = f["value"]
                 break
 
-        # Story chapter
-        chapter = await self.get_story_chapter(user_id)
+        # Heat meter: classify rudeness, then advance the needle (a rude turn
+        # holds it). The reply reflects the NEW level so a level-up feels
+        # responsive the moment he crosses the threshold.
+        from bot.story_progression import is_rude, record_step
+        rude = await is_rude(text, _llm_call)
+        heat_state = await record_step(user_id, rude)
 
-        # Build prompt — story mode always uses Grok (nsfw_provider) and SFW persona with story context
+        # Build prompt — story mode always uses Grok (nsfw_provider) with the
+        # current heat level gating how far she'll go.
         prompt_messages = await build_prompt(
             self.persona, ltm, stm,
             mode=mode,
             user_name=user_name,
             facts_text=facts_text,
-            story_chapter=chapter,
+            story_level=heat_state,
+            story_rude=rude,
         )
 
         try:
             response_text = await self.nsfw_provider.generate(prompt_messages)
         except Exception as e:
             logger.error("Story mode LLM failed: %s", e)
-            return ChatResponse(messages=["*She pauses, lost in thought for a moment...*"])
+            return ChatResponse(
+                messages=["*She pauses, lost in thought for a moment...*"],
+                story_heat=heat_state,
+            )
 
         if not response_text or not response_text.strip():
-            return ChatResponse(messages=["*She looks at you, searching for the right words...*"])
+            return ChatResponse(
+                messages=["*She looks at you, searching for the right words...*"],
+                story_heat=heat_state,
+            )
 
         await add_message(user_id, "assistant", response_text, mode=mode)
 
-        # Score this exchange and maybe advance the chapter
-        await self._maybe_advance_chapter(user_id, chapter, text, response_text, _llm_call)
+        # Story replies arrive as a SINGLE bubble — no batching, no splitting.
+        return ChatResponse(messages=[response_text.strip()], story_heat=heat_state)
 
-        # Split into multiple messages
-        parts = self._split_response(response_text)
-        return ChatResponse(messages=parts)
-
-    async def _maybe_advance_chapter(self, user_id: int, chapter: int, user_text: str, last_response: str, llm_call) -> None:
-        """Score the exchange and advance the chapter once enough progress accrues."""
-        import yaml
-        from pathlib import Path
-        from bot.config import STORY_FILE
-        from bot.story_progression import record_turn
-
-        path = Path(STORY_FILE)
-        if not path.exists():
-            return
-        with open(path, "r", encoding="utf-8") as f:
-            story_data = yaml.safe_load(f)
-
-        chapters = story_data.get("chapters", [])
-        total = story_data.get("meta", {}).get("total_chapters", len(chapters))
-
-        # Already at last chapter
-        if chapter >= total:
-            return
-
-        current = None
-        for ch in chapters:
-            if ch.get("id") == chapter:
-                current = ch
+    async def _llm_is_photo_request(self, text: str, stm: list[dict]) -> bool:
+        """Semantic fallback for photo-request detection, used only when the
+        strict regex missed but the message still looks photo-related (see
+        _photo_intent_candidate). One fast classification call on the light
+        classifier model; returns False on ANY error so a hiccup here can never
+        block or delay her reply."""
+        her_last = ""
+        for m in reversed(stm):
+            if m.get("role") == "assistant":
+                her_last = (m.get("content") or "")[:300]
                 break
-        if not current:
-            return
-
+        prompt = (
+            "Decide if a man's message is asking the woman he's sexting to SEND or "
+            "SHOW him a PHOTO / selfie / pic of HERSELF (her face, her body, what she "
+            "looks like right now), OR is agreeing to see a photo she just offered, OR "
+            "is asking her to prove she's real with a picture.\n"
+            "Answer NO if he is only talking dirty, describing a fantasy, asking to MEET "
+            "in person, saying goodbye, or talking about a photo of HIMSELF.\n\n"
+            f"Her last message: {her_last or '(none)'}\n"
+            f"His message: {text}\n\n"
+            "Answer with ONLY one word: YES or NO."
+        )
         try:
-            should_advance = await record_turn(
-                user_id, chapter, user_text, last_response, current, llm_call
-            )
-            if should_advance:
-                new_ch = await self.advance_story(user_id)
-                logger.info("Story advanced to chapter %d for user %d", new_ch, user_id)
+            out = await self.classifier_provider.generate_simple(prompt)
         except Exception as e:
-            logger.warning("Chapter progression check failed: %s", e)
+            logger.warning("LLM photo-intent check failed: %s", e)
+            return False
+        return (out or "").strip().lower().startswith("y")
 
     # ------------------------------------------------------------------
     # Sexting mode — batched; always Grok (no provider switch). The SFW/NSFW
@@ -860,9 +871,19 @@ class ChatEngine:
         opt_in = bool(PHOTO_OPT_IN_PATTERN.search(text))
         pending_offer = bool(self._pending_photo_offer.get(user_id))
         she_just_offered = _her_last_message_offered_photo(stm)
+        # Fast path (no LLM): explicit regex request, or a short opt-in right
+        # after she offered a photo.
         reactive_request = (not is_user_photo) and (
             _is_photo_request(text) or ((pending_offer or she_just_offered) and opt_in)
         )
+        # Hybrid fallback: the strict regex misses paraphrases/typos/slang
+        # ("i want see a picture of u", "prove you're real"). Only when the fast
+        # path didn't fire AND the message looks photo-adjacent do we spend ONE
+        # fast LLM call to read intent semantically — keeping latency off the
+        # common case while still "understanding" the rest.
+        if (not reactive_request) and (not is_user_photo) and _photo_intent_candidate(text):
+            if await self._llm_is_photo_request(text, stm):
+                reactive_request = True
 
         push_hint = None
         will_push = False
