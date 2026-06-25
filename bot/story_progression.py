@@ -1,24 +1,31 @@
 """
-Story progression — a simple 3-level heat meter for Story mode.
+Story progression — a smooth 13-phase heat gradient for Story mode.
 
-The "Caught" scene runs on a step counter `heat` 0..MAX_HEAT (3 levels x
-STEPS_PER_LEVEL steps). Each NON-rude exchange advances the needle by one step;
-a rude / insulting message advances nothing (she sets a boundary instead). The
-level gates how far she'll go:
-
-    Angry (heat 0-4)  ->  Flirty (heat 5-9)  ->  Hot (heat 10-15, explicit)
+The "Caught" scene runs on a step counter `heat` 0..MAX_HEAT, where each value
+maps 1:1 to a phase defined in stories/victoria_story.yaml (`stages`). Each
+NON-rude exchange advances the needle by exactly one phase; a rude / insulting
+message advances nothing (she sets a boundary instead). The active phase's
+`behavior` gates how far she'll go, and its `zone` (angry/flirty/hot) only
+colours the gauge.
 
 There is no cool-down: the needle only ever rises (or holds on a rude turn).
+The phases are the single source of truth in the YAML — add/remove entries
+there and MAX_HEAT follows automatically.
 """
 
 import logging
+from pathlib import Path
 
+import yaml
+
+from bot.config import STORY_FILE
 from bot.memory.db import get_connection
 
 logger = logging.getLogger(__name__)
 
-STEPS_PER_LEVEL = 5
-MAX_HEAT = 15  # 3 levels x STEPS_PER_LEVEL
+# Maps a phase `zone` to the 1-3 gauge level the frontend uses for colour.
+_ZONE_LEVEL = {"angry": 1, "flirty": 2, "hot": 3}
+_FALLBACK_MAX_HEAT = 12  # used only if the story file can't be read
 
 # One quick yes/no classification per story turn. Only a direct insult/abuse
 # blocks progress; ordinary (even bland or clumsy) messages count as a step.
@@ -31,26 +38,49 @@ His message: "{msg}"
 Answer with ONLY one word: YES (rude) or NO (not rude)."""
 
 
-def level_for(heat: int) -> tuple[int, str]:
-    """Map a heat value (0..MAX_HEAT) to (level_number 1-3, label)."""
-    if heat <= 4:
-        return 1, "Angry"
-    if heat <= 9:
-        return 2, "Flirty"
-    return 3, "Hot"
+def _load_stages() -> list[dict]:
+    """Load the phase list from the story YAML. Read fresh each call so edits to
+    the file take effect without a restart (mirrors prompt_builder._load_story)."""
+    try:
+        path = Path(STORY_FILE)
+        if not path.exists():
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return data.get("stages", []) or []
+    except Exception as e:
+        logger.warning("Failed to load story stages: %s", e)
+        return []
+
+
+def _max_heat(stages: list[dict] | None = None) -> int:
+    stages = _load_stages() if stages is None else stages
+    return (len(stages) - 1) if stages else _FALLBACK_MAX_HEAT
 
 
 def _state(heat: int) -> dict:
-    heat = max(0, min(MAX_HEAT, int(heat)))
-    level, label = level_for(heat)
+    stages = _load_stages()
+    max_heat = _max_heat(stages)
+    heat = max(0, min(max_heat, int(heat)))
+
+    if stages:
+        stage = stages[heat]
+        label = stage.get("label", "")
+        zone = stage.get("zone", "angry")
+        level = _ZONE_LEVEL.get(zone, 1)
+        explicit = bool(stage.get("explicit", False))
+        climax = bool(stage.get("climax", False)) or heat >= max_heat
+    else:
+        label, level, explicit, climax = "", 1, False, heat >= max_heat
+
     return {
         "heat": heat,
-        "level": level,
+        "stage": heat + 1,          # 1-indexed phase number for the gauge
+        "level": level,             # 1-3 zone, drives the gauge colour
         "label": label,
-        "max_heat": MAX_HEAT,
-        "climax": heat >= MAX_HEAT,
-        # explicit content unlocks at the Hot level
-        "explicit": heat >= 10,
+        "max_heat": max_heat,
+        "climax": climax,
+        "explicit": explicit,
     }
 
 
@@ -86,8 +116,9 @@ async def record_step(user_id: int, rude: bool) -> dict:
     return the new heat state. Never decreases; caps at MAX_HEAT."""
     current = await get_heat(user_id)
     heat = current["heat"]
+    max_heat = _max_heat()
     if not rude:
-        heat = min(MAX_HEAT, heat + 1)
+        heat = min(max_heat, heat + 1)
 
     conn = await get_connection()
     try:
@@ -105,7 +136,7 @@ async def record_step(user_id: int, rude: bool) -> dict:
 
     state = _state(heat)
     logger.info(
-        "Story heat user %d: %d/%d (%s)%s",
-        user_id, heat, MAX_HEAT, state["label"], " [rude, held]" if rude else "",
+        "Story heat user %d: phase %d/%d (%s)%s",
+        user_id, state["stage"], max_heat + 1, state["label"], " [rude, held]" if rude else "",
     )
     return state

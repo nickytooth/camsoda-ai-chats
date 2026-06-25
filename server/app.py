@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from bot.config import (
     SERVER_HOST, SERVER_PORT, CONTENT_DIR, UPLOADS_DIR,
-    DEFAULT_USER_ID, PERSONA_FILE_SEXTING, GEMINI_FALLBACK_MODEL,
+    DEFAULT_USER_ID, PERSONA_FILE_SEXTING, PERSONA_FILE_STORY, GEMINI_FALLBACK_MODEL,
     PHOTO_UNLOCK_COST,
 )
 from bot.memory.db import init_db, get_connection
@@ -50,6 +50,14 @@ async def lifespan(app: FastAPI):
     logger.info("Loading persona...")
     persona = load_persona(PERSONA_FILE_SEXTING)
     nsfw_persona = persona  # one always-open persona drives everything
+    # Story mode uses a dedicated persona; fall back to the base persona if the
+    # file is missing so a deploy without it never breaks story mode.
+    if PERSONA_FILE_STORY.exists():
+        story_persona = load_persona(PERSONA_FILE_STORY)
+        logger.info("Story persona loaded: %s", story_persona.name)
+    else:
+        story_persona = persona
+        logger.warning("Story persona file missing (%s) — falling back to base persona", PERSONA_FILE_STORY)
     logger.info("Persona loaded: %s", persona.name)
 
     logger.info("Initializing LLM providers...")
@@ -66,6 +74,7 @@ async def lifespan(app: FastAPI):
     engine = ChatEngine(
         persona=persona,
         nsfw_persona=nsfw_persona,
+        story_persona=story_persona,
         nsfw_provider=nsfw_provider,
         classifier_provider=classifier_provider,
         vision_provider=vision_provider,

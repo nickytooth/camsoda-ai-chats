@@ -19,13 +19,35 @@ _STORY_STYLE_DIRECTIVE = (
     "STORY STYLE — this is an interactive roleplay scene, NOT a text chat:\n"
     "- Reply as ONE message (a single bubble). Do NOT split into multiple "
     "messages and do NOT use blank lines to create separate bubbles.\n"
-    "- Keep it SHORT — about 1 to 3 sentences.\n"
-    "- Weave in brief *italic* stage directions for her body language and "
-    "reactions (a few words each), e.g. *rolls her eyes*, *chuckles softly, "
-    "still flustered*, *raises an eyebrow, smirking*. Use 1-2 per reply.\n"
+    "- Keep it tight — about 2 to 4 sentences.\n"
+    "- Weave in 1 to 2 brief *italic* stage directions for her body language and "
+    "reactions (a few words each), threaded BETWEEN the spoken lines rather than "
+    "piled up. VARY them every time — never reuse a gesture you used in a recent "
+    "reply (eyebrow raise, smirk, leaning on the doorframe, crossed arms). Reach "
+    "for a fresh, specific beat each turn.\n"
+    "- POV: write her actions toward the user in the SECOND person — *she leans "
+    "into you*, *she grabs your wrist*, *she pulls you close*. NEVER narrate him "
+    "in the third person ('him', 'his', 'them'); it's always 'you' / 'your'.\n"
     "- Stay fully in character and inside the scene: react to what he just did "
     "or said, and let the moment move only as far as her current state allows.\n"
-    "- Use his name occasionally if you know it."
+    "- Use his name RARELY — at most once every few replies, and NEVER in every "
+    "message. Most of your replies should use no name at all."
+)
+
+_STORY_ANTI_REPETITION = (
+    "DON'T REPEAT YOURSELF: each reply must feel fresh and move the moment "
+    "FORWARD, never restate it. Do NOT recycle the same phrases turn after turn "
+    "('this is wrong', 'so wrong', 'Emma's mother', 'you have some nerve'), the "
+    "same sentence shapes, or the same gestures. If you made a point last turn, "
+    "build on it or react to what he just said — don't say it again in new words."
+)
+
+_STORY_MONOTONIC = (
+    "WHERE SHE IS IN THE ARC: she only ever thaws FORWARD through the scene. "
+    "Once she has reached this phase she does NOT snap back to a colder, angrier "
+    "one. Play exactly THIS phase — don't leap ahead to warmth or heat she "
+    "hasn't reached yet, and don't regress below it. The shift from the last "
+    "phase to this one should feel like one small, believable step."
 )
 
 _STORY_RUDE_DIRECTIVE = (
@@ -37,25 +59,20 @@ _STORY_RUDE_DIRECTIVE = (
 
 
 def _get_story_context(story_data: dict, level_info: dict, rude: bool = False) -> str:
-    """Build the story context for the current heat level.
+    """Build the story context for the current phase.
 
     `level_info` is the heat state from bot.story_progression.get_heat /
-    record_step ({heat, level, label, max_heat, ...}). The active level's
-    `behavior` text is what actually gates how far Victoria will go.
+    record_step ({heat, stage, level, label, max_heat, ...}). `heat` maps 1:1
+    to a phase in `stages`; that phase's `behavior` gates how far Victoria goes.
     """
     heat = int(level_info.get("heat", 0))
-    max_heat = int(level_info.get("max_heat", 15))
-    levels = story_data.get("levels", [])
-
-    current = None
-    for lv in levels:
-        if heat <= int(lv.get("max", 9999)):
-            current = lv
-            break
-    if current is None and levels:
-        current = levels[-1]
-    if current is None:
+    max_heat = int(level_info.get("max_heat", 12))
+    stages = story_data.get("stages", [])
+    if not stages:
         return ""
+
+    idx = max(0, min(len(stages) - 1, heat))
+    current = stages[idx]
 
     meta = story_data.get("meta", {})
     label = current.get("label", level_info.get("label", ""))
@@ -64,12 +81,15 @@ def _get_story_context(story_data: dict, level_info: dict, rude: bool = False) -
         f"Premise: {meta.get('premise', '').strip()}",
         f"Setting: {story_data.get('setting', '').strip()}",
         (
-            f"HER CURRENT STATE — {label} (heat {heat}/{max_heat}):\n"
+            f"HER CURRENT PHASE — {label} (phase {idx + 1}/{len(stages)}, "
+            f"heat {heat}/{max_heat}):\n"
             f"{current.get('behavior', '').strip()}"
         ),
+        _STORY_MONOTONIC,
     ]
     if rude:
         parts.append(_STORY_RUDE_DIRECTIVE)
+    parts.append(_STORY_ANTI_REPETITION)
     parts.append(_STORY_STYLE_DIRECTIVE)
     return "\n\n".join(parts)
 
@@ -93,7 +113,10 @@ async def build_prompt(
 
     # User's name
     if user_name:
-        system_parts.append(f"The user's name is {user_name}. Use it naturally alongside your usual pet names.")
+        if mode == "story":
+            system_parts.append(f"The user's name is {user_name}. Use it sparingly and naturally, never in every line.")
+        else:
+            system_parts.append(f"The user's name is {user_name}. Use it naturally alongside your usual pet names.")
 
     # Time-of-day context (includes weather)
     system_parts.append(await get_time_prompt())

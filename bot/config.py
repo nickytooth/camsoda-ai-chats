@@ -15,6 +15,10 @@ DATABASE_URL = os.getenv(
 # Victoria is a single, always-open persona for all sexting.
 # The legacy SFW/NSFW persona files now live in personas/archive/ and are not loaded.
 PERSONA_FILE_SEXTING = BASE_DIR / os.getenv("SINGLE_PERSONA_FILE", "personas/victoria1.yaml")
+# Story mode uses a dedicated persona written for the "Caught" scene (traits only;
+# her current state is driven by the phase in STORY_FILE). Falls back to the
+# sexting persona if the file is missing.
+PERSONA_FILE_STORY = BASE_DIR / os.getenv("STORY_PERSONA_FILE", "personas/victoria1_story.yaml")
 STORY_FILE = BASE_DIR / os.getenv("STORY_FILE", "stories/victoria_story.yaml")
 
 # Authored libraries the "Hear a fantasy" / "Hear a story" cards draw from

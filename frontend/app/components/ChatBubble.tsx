@@ -17,7 +17,7 @@ function renderContent(content: string, isStory: boolean) {
   return parts.map((part, i) => {
     if (part.startsWith("*") && part.endsWith("*")) {
       return (
-        <em key={i} className="text-purple-300/80 not-italic font-light">
+        <em key={i} className="text-purple-300/80 italic font-light">
           {part.slice(1, -1)}
         </em>
       );

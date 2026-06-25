@@ -241,12 +241,16 @@ class ChatEngine:
         nsfw_persona: Persona | None,
         nsfw_provider: LLMProvider,
         classifier_provider: LLMProvider,
+        story_persona: Persona | None = None,
         sfw_provider: LLMProvider | None = None,
         vision_provider=None,
         fallback_provider: LLMProvider | None = None,
     ):
         self.persona = persona
         self.nsfw_persona = nsfw_persona
+        # Story mode uses a dedicated persona written for the "Caught" scene;
+        # fall back to the base persona if none was provided.
+        self.story_persona = story_persona or persona
         # Victoria is always-open: every reply runs through nsfw_provider (Grok).
         # sfw_provider is retained for optional future SFW/intimacy-stage routing
         # but is currently unused.
@@ -743,9 +747,10 @@ class ChatEngine:
         heat_state = await record_step(user_id, rude)
 
         # Build prompt — story mode always uses Grok (nsfw_provider) with the
-        # current heat level gating how far she'll go.
+        # current heat level gating how far she'll go. Uses the dedicated story
+        # persona (traits only; her state comes from the phase).
         prompt_messages = await build_prompt(
-            self.persona, ltm, stm,
+            self.story_persona, ltm, stm,
             mode=mode,
             user_name=user_name,
             facts_text=facts_text,

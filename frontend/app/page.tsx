@@ -147,6 +147,13 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
 
   const inputDisabled = mode === "story" && isWaitingStory;
 
+  // Only show messages belonging to the active mode. The shared `messages`
+  // array can briefly hold a cross-mode reply when a WebSocket response lands
+  // just after the user has switched tabs; filtering here keeps sexting and
+  // story views from bleeding into each other (the backend persists per mode,
+  // so a reload already shows the correct set).
+  const visibleMessages = messages.filter((msg) => msg.mode === mode);
+
   return (
     <div className="flex h-screen">
       {/* ---- Chat area ---- */}
@@ -210,12 +217,12 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
           ref={scrollRef}
           className="flex-1 overflow-y-auto py-4 bg-[var(--chat-bg)]"
         >
-          {messages.length === 0 && (
+          {visibleMessages.length === 0 && (
             <div className="flex items-center justify-center h-full text-[var(--muted)] text-sm">
               Start a conversation...
             </div>
           )}
-          {messages.map((msg) => (
+          {visibleMessages.map((msg) => (
             <ChatBubble
               key={msg.id}
               message={msg}

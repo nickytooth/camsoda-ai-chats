@@ -4,6 +4,7 @@ import React from "react";
 
 export interface StoryHeat {
   heat: number;
+  stage?: number;
   level: number;
   label: string;
   max_heat: number;
@@ -46,6 +47,8 @@ export default function StoryMeter({ heat }: Props) {
   const label = heat?.label ?? "Angry";
   const level = heat?.level ?? 1;
   const climax = !!heat?.climax;
+  const totalPhases = max + 1;
+  const phase = heat?.stage ?? value + 1;
 
   const f = max > 0 ? value / max : 0;
   const needleAngle = 180 - f * 180;
@@ -124,7 +127,7 @@ export default function StoryMeter({ heat }: Props) {
           {climax ? "Climax" : label}
         </span>
         <span className="text-[10px] text-[var(--muted)] uppercase tracking-widest">
-          Level {level} / 3
+          Phase {phase} / {totalPhases}
         </span>
       </div>
     </div>
