@@ -474,6 +474,9 @@ async def websocket_chat(ws: WebSocket, user_id: int = Query(default=None), user
 
             if mode == "story":
                 # Story mode: direct processing, one at a time (no batching).
+                # Start the typing indicator right away so she looks like she's
+                # already thinking/typing during generation, not just at the end.
+                await manager.send_json(user_id, {"type": "typing_start"})
                 response = await engine.process_message(user_id, text, mode="story", image_bytes=image_bytes)
                 await _send_response_with_typing(user_id, response, mode="story")
                 # Push the updated heat-meter state to the speedometer.

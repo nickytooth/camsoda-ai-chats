@@ -42,6 +42,10 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
   const reconnectTimer = useRef<NodeJS.Timeout | null>(null);
   const idCounter = useRef(0);
   const openingAnimating = useRef(false);
+  // The sexting opening is animated once per session. Without this, switching
+  // away to story and back would replay the first bubbles every time, because
+  // the (still unanswered) history is all-assistant and looks "fresh" again.
+  const sextingOpeningPlayed = useRef(false);
 
   const genId = () => `msg-${Date.now()}-${idCounter.current++}`;
 
@@ -81,7 +85,14 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
         // Guard against double-run (React StrictMode mounts effects twice in
         // dev, which would otherwise append every bubble twice).
         if (openingAnimating.current) return;
+        // Already animated once this session (e.g. switched away and back):
+        // just show the bubbles statically instead of replaying them.
+        if (sextingOpeningPlayed.current) {
+          setMessages(loaded);
+          return;
+        }
         openingAnimating.current = true;
+        sextingOpeningPlayed.current = true;
         try {
           setMessages([]);
           for (let i = 0; i < loaded.length; i++) {
@@ -213,6 +224,9 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
 
       if (mode === "story") {
         setIsWaitingStory(true);
+        // Show the typing indicator immediately so the "thinking" animation
+        // runs during generation, not just right before the reply arrives.
+        setIsTyping(true);
       }
 
       // Backend expects raw base64 (no "data:...;base64," prefix) for vision.

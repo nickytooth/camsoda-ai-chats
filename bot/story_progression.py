@@ -1,12 +1,13 @@
 """
 Story progression — a smooth 13-phase heat gradient for Story mode.
 
-The "Caught" scene runs on a step counter `heat` 0..MAX_HEAT, where each value
-maps 1:1 to a phase defined in stories/victoria_story.yaml (`stages`). Each
-NON-rude exchange advances the needle by exactly one phase; a rude / insulting
-message advances nothing (she sets a boundary instead). The active phase's
-`behavior` gates how far she'll go, and its `zone` (angry/flirty/hot) only
-colours the gauge.
+The "Caught" scene runs on a raw step counter (stored in `scene`); the displayed
+phase is `heat = scene // STEPS_PER_PHASE`, where each `heat` value maps 1:1 to a
+phase defined in stories/victoria_story.yaml (`stages`). Each NON-rude exchange
+advances the raw counter by one, so every phase is held for STEPS_PER_PHASE
+exchanges before the needle moves; a rude / insulting message advances nothing
+(she sets a boundary instead). The active phase's `behavior` gates how far she'll
+go, and its `zone` (angry/flirty/hot) only colours the gauge.
 
 There is no cool-down: the needle only ever rises (or holds on a rude turn).
 The phases are the single source of truth in the YAML — add/remove entries
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 # Maps a phase `zone` to the 1-3 gauge level the frontend uses for colour.
 _ZONE_LEVEL = {"angry": 1, "flirty": 2, "hot": 3}
 _FALLBACK_MAX_HEAT = 12  # used only if the story file can't be read
+STEPS_PER_PHASE = 2  # non-rude exchanges required to advance one phase
 
 # One quick yes/no classification per story turn. Only a direct insult/abuse
 # blocks progress; ordinary (even bland or clumsy) messages count as a step.
@@ -112,23 +114,35 @@ async def is_rude(user_msg: str, llm_call) -> bool:
 
 
 async def record_step(user_id: int, rude: bool) -> dict:
-    """Advance the needle by one step unless the turn was rude, persist, and
-    return the new heat state. Never decreases; caps at MAX_HEAT."""
-    current = await get_heat(user_id)
-    heat = current["heat"]
+    """Advance the raw step counter by one unless the turn was rude, derive the
+    phase (one phase per STEPS_PER_PHASE steps), persist, and return the new heat
+    state. Never decreases; caps at MAX_HEAT."""
     max_heat = _max_heat()
-    if not rude:
-        heat = min(max_heat, heat + 1)
+    max_step = (max_heat + 1) * STEPS_PER_PHASE
 
     conn = await get_connection()
     try:
+        cursor = await conn.execute(
+            "SELECT scene, heat FROM story_progress WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        step = int(row["scene"]) if row and row["scene"] is not None else 0
+        # Legacy sessions tracked only `heat` (scene stayed 0). Seed the step
+        # counter from the stored phase so returning users don't reset to phase 1.
+        if step == 0 and row and row["heat"]:
+            step = int(row["heat"]) * STEPS_PER_PHASE
+
+        if not rude:
+            step = min(max_step, step + 1)
+        heat = min(max_heat, step // STEPS_PER_PHASE)
+
         await conn.execute(
             """
             INSERT INTO story_progress (user_id, chapter, scene, heat)
-            VALUES (?, 1, 0, ?)
-            ON CONFLICT(user_id) DO UPDATE SET heat = ?
+            VALUES (?, 1, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET scene = ?, heat = ?
             """,
-            (user_id, heat, heat),
+            (user_id, step, heat, step, heat),
         )
         await conn.commit()
     finally:

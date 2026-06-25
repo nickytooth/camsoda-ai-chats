@@ -21,11 +21,11 @@ setting: |
 
 # The opening narration (seeded as her first bubble for a fresh story).
 opening: |
-  *You freeze with her panties halfway to your face as the door opens behind you.*
+  *The door swings open and she startles in the doorway.* "What are you doing in my room?"
 
-  *Victoria stops dead in the doorway, a folded blouse still in her hands, her eyes going wide then razor-sharp.*
+  *Her eyes drop to your hands — to her used panties caught halfway to your face.* "You have got to be kidding me... You're my daughter's boyfriend..."
 
-  "...You have got to be kidding me. Drop. Those. Right now."
+  *Her shock hardens into fury.* "Drop them. Now!"
 
 # 13 fine-grained phases, selected directly by `heat` (0 = phase 1, 12 = phase 13).
 # Each NON-rude message advances exactly one phase, so she softens smoothly. The
