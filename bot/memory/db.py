@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at DOUBLE PRECISION NOT NULL,
     last_accessed DOUBLE PRECISION
 );
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'sexting';
 CREATE TABLE IF NOT EXISTS sent_content (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -89,6 +90,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_shared_content_uniq ON shared_content(user
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user_mode ON messages(user_id, mode);
 CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
+CREATE INDEX IF NOT EXISTS idx_memories_user_mode ON memories(user_id, mode);
 CREATE INDEX IF NOT EXISTS idx_sent_content_user ON sent_content(user_id);
 CREATE INDEX IF NOT EXISTS idx_sent_content_paid ON sent_content(user_id, content_id, paid);
 CREATE INDEX IF NOT EXISTS idx_user_facts ON user_facts(user_id);

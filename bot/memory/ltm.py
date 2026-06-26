@@ -85,28 +85,38 @@ def should_retrieve(user_id: int, message: str) -> bool:
 
 
 async def store_memory(
-    user_id: int, category: str, content: str, importance: int, embedding: np.ndarray
+    user_id: int, category: str, content: str, importance: int, embedding: np.ndarray,
+    mode: str = "sexting",
 ) -> None:
     conn = await get_connection()
     try:
         await conn.execute(
-            "INSERT INTO memories (user_id, category, content, importance, embedding, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, category, content, importance, embedding.tobytes(), time.time()),
+            "INSERT INTO memories (user_id, category, content, importance, embedding, created_at, mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, category, content, importance, embedding.tobytes(), time.time(), mode),
         )
         await conn.commit()
     finally:
         await conn.close()
 
 
-async def get_all_memories(user_id: int) -> list[dict]:
+async def get_all_memories(user_id: int, mode: str | None = None) -> list[dict]:
+    """Return a user's memories. `mode=None` spans all modes (back-compat);
+    pass a mode to keep story and sexting long-term memory separate."""
     conn = await get_connection()
     try:
-        cursor = await conn.execute(
-            "SELECT id, category, content, importance, embedding, created_at, last_accessed "
-            "FROM memories WHERE user_id = ? ORDER BY created_at DESC",
-            (user_id,),
-        )
+        if mode is None:
+            cursor = await conn.execute(
+                "SELECT id, category, content, importance, embedding, created_at, last_accessed "
+                "FROM memories WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            )
+        else:
+            cursor = await conn.execute(
+                "SELECT id, category, content, importance, embedding, created_at, last_accessed "
+                "FROM memories WHERE user_id = ? AND mode = ? ORDER BY created_at DESC",
+                (user_id, mode),
+            )
         rows = await cursor.fetchall()
         results = []
         for row in rows:
@@ -125,8 +135,10 @@ async def get_all_memories(user_id: int) -> list[dict]:
         await conn.close()
 
 
-async def retrieve_relevant(user_id: int, message: str, top_k: int = LTM_TOP_K) -> list[dict]:
-    memories = await get_all_memories(user_id)
+async def retrieve_relevant(
+    user_id: int, message: str, top_k: int = LTM_TOP_K, mode: str | None = None
+) -> list[dict]:
+    memories = await get_all_memories(user_id, mode=mode)
     if not memories:
         return []
 
@@ -170,10 +182,10 @@ async def retrieve_relevant(user_id: int, message: str, top_k: int = LTM_TOP_K) 
 
 
 async def find_similar_memory(
-    user_id: int, embedding: np.ndarray, threshold: float = 0.85
+    user_id: int, embedding: np.ndarray, threshold: float = 0.85, mode: str | None = None
 ) -> dict | None:
     """Find an existing memory with cosine similarity above threshold."""
-    memories = await get_all_memories(user_id)
+    memories = await get_all_memories(user_id, mode=mode)
     best_match = None
     best_sim = 0.0
     for mem in memories:
@@ -203,13 +215,19 @@ async def update_memory(
         await conn.close()
 
 
-async def count_memories(user_id: int) -> int:
+async def count_memories(user_id: int, mode: str | None = None) -> int:
     conn = await get_connection()
     try:
-        cursor = await conn.execute(
-            "SELECT COUNT(*) as cnt FROM memories WHERE user_id = ?",
-            (user_id,),
-        )
+        if mode is None:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) as cnt FROM memories WHERE user_id = ?",
+                (user_id,),
+            )
+        else:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND mode = ?",
+                (user_id, mode),
+            )
         row = await cursor.fetchone()
         return row["cnt"] if row else 0
     finally:

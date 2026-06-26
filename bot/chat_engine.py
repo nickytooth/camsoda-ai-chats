@@ -521,7 +521,7 @@ class ChatEngine:
                 if m.get("role") == "user" and m.get("content"):
                     query = m["content"]
                     break
-        ltm = await retrieve_relevant(user_id, query) if query else []
+        ltm = await retrieve_relevant(user_id, query, mode=mode) if query else []
 
         scene = get_scene()
         examples = get_examples("fantasy", 2)
@@ -716,17 +716,17 @@ class ChatEngine:
         async def _llm_call(prompt: str) -> str:
             return await self.classifier_provider.generate_simple(prompt)
 
-        await maybe_summarize(user_id, _llm_call)
-        await maybe_compact(user_id, _llm_call)
+        await maybe_summarize(user_id, _llm_call, mode=mode)
+        await maybe_compact(user_id, _llm_call, mode=mode)
 
         stm = await get_recent_messages(user_id, STM_MAX_TURNS, mode=mode)
         if not stm or not any(m["role"] == "user" for m in stm):
             stm = [{"role": "user", "content": text}]
 
-        # LTM
+        # LTM — story has its own long-term pool, separate from sexting.
         ltm = []
         if should_retrieve(user_id, text):
-            ltm = await retrieve_relevant(user_id, text)
+            ltm = await retrieve_relevant(user_id, text, mode=mode)
 
         # Facts
         user_facts = await get_facts(user_id)
@@ -821,8 +821,8 @@ class ChatEngine:
         async def _llm_call(prompt: str) -> str:
             return await self.classifier_provider.generate_simple(prompt)
 
-        await maybe_summarize(user_id, _llm_call)
-        await maybe_compact(user_id, _llm_call)
+        await maybe_summarize(user_id, _llm_call, mode=mode)
+        await maybe_compact(user_id, _llm_call, mode=mode)
 
         # Capture how long since the user last messaged (before track_message
         # overwrites last_message_at) so she can greet like a real person.
@@ -941,7 +941,7 @@ class ChatEngine:
         # LTM
         ltm = []
         if should_retrieve(user_id, text):
-            ltm = await retrieve_relevant(user_id, text)
+            ltm = await retrieve_relevant(user_id, text, mode=mode)
 
         # AI-identity probing → graceful, in-character deflection. Takes precedence
         # over any photo this reply (no photo while deflecting).

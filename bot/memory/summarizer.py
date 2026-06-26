@@ -84,13 +84,14 @@ def _format_messages_for_summary(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def maybe_summarize(user_id: int, llm_call) -> bool:
-    # Shared memory: count and summarize across all modes (story + sexting).
-    turns = await count_turns(user_id, mode=None)
+async def maybe_summarize(user_id: int, llm_call, mode: str = "sexting") -> bool:
+    # Per-mode memory: story and sexting each summarize their own transcript into
+    # their own long-term pool, so nothing bleeds between the two.
+    turns = await count_turns(user_id, mode=mode)
     if turns < STM_MAX_TURNS:
         return False
 
-    oldest = await get_oldest_messages(user_id, STM_SUMMARIZE_BATCH, mode=None)
+    oldest = await get_oldest_messages(user_id, STM_SUMMARIZE_BATCH, mode=mode)
     if not oldest:
         return False
 
@@ -120,7 +121,7 @@ async def maybe_summarize(user_id: int, llm_call) -> bool:
         new_count = 0
         updated_count = 0
         for entry, embedding in zip(entries, embeddings):
-            existing = await find_similar_memory(user_id, embedding, threshold=0.85)
+            existing = await find_similar_memory(user_id, embedding, threshold=0.85, mode=mode)
             if existing:
                 new_imp = max(existing["importance"], entry.get("importance", 5))
                 await update_memory(existing["id"], entry["content"], new_imp, embedding)
@@ -132,6 +133,7 @@ async def maybe_summarize(user_id: int, llm_call) -> bool:
                     content=entry["content"],
                     importance=entry.get("importance", 5),
                     embedding=embedding,
+                    mode=mode,
                 )
                 new_count += 1
 
@@ -156,12 +158,12 @@ async def maybe_summarize(user_id: int, llm_call) -> bool:
     return True
 
 
-async def maybe_compact(user_id: int, llm_call) -> bool:
-    mem_count = await count_memories(user_id)
+async def maybe_compact(user_id: int, llm_call, mode: str = "sexting") -> bool:
+    mem_count = await count_memories(user_id, mode=mode)
     if mem_count < LTM_COMPACTION_THRESHOLD:
         return False
 
-    memories = await get_all_memories(user_id)
+    memories = await get_all_memories(user_id, mode=mode)
     entries_text = json.dumps(
         [{"category": m["category"], "content": m["content"], "importance": m["importance"]} for m in memories],
         indent=2,
@@ -188,6 +190,7 @@ async def maybe_compact(user_id: int, llm_call) -> bool:
             content=entry["content"],
             importance=entry.get("importance", 5),
             embedding=embedding,
+            mode=mode,
         )
 
     logger.info("Compacted %d memories into %d for user %d", len(old_ids), len(new_entries), user_id)
