@@ -98,6 +98,14 @@ export default function StoryMeter({ heat, compact }: Props) {
               <stop offset="100%" stopColor="#ef4444" />
             </linearGradient>
           </defs>
+          {/* Faint background track for depth */}
+          <path
+            d={carc(180, 0, cr)}
+            fill="none"
+            stroke="#2a2a3c"
+            strokeWidth={7}
+            strokeLinecap="round"
+          />
           <path
             d={carc(180, 0, cr)}
             fill="none"

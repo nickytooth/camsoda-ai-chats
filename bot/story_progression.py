@@ -2,10 +2,11 @@
 Story progression — a smooth 13-phase heat gradient for Story mode.
 
 The "Caught" scene runs on a raw step counter (stored in `scene`); the displayed
-phase is `heat = scene // STEPS_PER_PHASE`, where each `heat` value maps 1:1 to a
-phase defined in stories/victoria_story.yaml (`stages`). Each NON-rude exchange
-advances the raw counter by one, so every phase is held for STEPS_PER_PHASE
-exchanges before the needle moves; a rude / insulting message advances nothing
+phase (`heat`) is derived from that counter with VARIABLE pacing: the first
+SLOW_PHASES advances each cost SLOW_COST messages, every advance after costs
+FAST_COST — so she lingers early then moves faster. Each `heat` value maps 1:1 to
+a phase defined in stories/victoria_story.yaml (`stages`). Each NON-rude exchange
+advances the raw counter by one; a rude / insulting message advances nothing
 (she sets a boundary instead). The active phase's `behavior` gates how far she'll
 go, and its `zone` (angry/flirty/hot) only colours the gauge.
 
@@ -27,7 +28,33 @@ logger = logging.getLogger(__name__)
 # Maps a phase `zone` to the 1-3 gauge level the frontend uses for colour.
 _ZONE_LEVEL = {"angry": 1, "flirty": 2, "hot": 3}
 _FALLBACK_MAX_HEAT = 12  # used only if the story file can't be read
-STEPS_PER_PHASE = 2  # non-rude exchanges required to advance one phase
+
+# Variable pacing: the first SLOW_PHASES advances (heat 0->1 ... up to
+# SLOW_PHASES) each cost SLOW_COST non-rude messages; every advance after that
+# costs FAST_COST. She lingers early, then moves faster toward the climax.
+SLOW_PHASES = 5
+SLOW_COST = 2
+FAST_COST = 1
+
+
+def _phase_cost(from_heat: int) -> int:
+    """Non-rude messages needed to advance OUT of phase index `from_heat`."""
+    return SLOW_COST if from_heat < SLOW_PHASES else FAST_COST
+
+
+def _step_for_heat(heat: int) -> int:
+    """Cumulative raw steps required to reach phase index `heat`."""
+    return sum(_phase_cost(h) for h in range(max(0, heat)))
+
+
+def _heat_for_step(step: int, max_heat: int) -> int:
+    """Convert a raw step counter into a phase index using the variable costs."""
+    heat = 0
+    remaining = max(0, step)
+    while heat < max_heat and remaining >= _phase_cost(heat):
+        remaining -= _phase_cost(heat)
+        heat += 1
+    return heat
 
 # One quick yes/no classification per story turn. Only a direct insult/abuse
 # blocks progress; ordinary (even bland or clumsy) messages count as a step.
@@ -115,10 +142,10 @@ async def is_rude(user_msg: str, llm_call) -> bool:
 
 async def record_step(user_id: int, rude: bool) -> dict:
     """Advance the raw step counter by one unless the turn was rude, derive the
-    phase (one phase per STEPS_PER_PHASE steps), persist, and return the new heat
+    phase via the variable pacing helpers, persist, and return the new heat
     state. Never decreases; caps at MAX_HEAT."""
     max_heat = _max_heat()
-    max_step = (max_heat + 1) * STEPS_PER_PHASE
+    max_step = _step_for_heat(max_heat)
 
     conn = await get_connection()
     try:
@@ -130,11 +157,11 @@ async def record_step(user_id: int, rude: bool) -> dict:
         # Legacy sessions tracked only `heat` (scene stayed 0). Seed the step
         # counter from the stored phase so returning users don't reset to phase 1.
         if step == 0 and row and row["heat"]:
-            step = int(row["heat"]) * STEPS_PER_PHASE
+            step = _step_for_heat(int(row["heat"]))
 
         if not rude:
             step = min(max_step, step + 1)
-        heat = min(max_heat, step // STEPS_PER_PHASE)
+        heat = min(max_heat, _heat_for_step(step, max_heat))
 
         await conn.execute(
             """

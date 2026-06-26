@@ -11,7 +11,7 @@ import StoryMeter from "./components/StoryMeter";
 import ProfileSidebar from "./components/ProfileSidebar";
 import NameScreen from "./components/NameScreen";
 import { API_BASE } from "./api";
-import { Circle, MapPin } from "lucide-react";
+import { Circle } from "lucide-react";
 
 // Canned messages sent AS the user when a starter card is clicked. One is
 // picked at random so it doesn't read identically every time.
@@ -159,40 +159,34 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
       {/* ---- Chat area ---- */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top bar */}
-        <div className="flex items-start justify-between px-4 py-3 bg-[#111118] border-b border-[var(--border)]">
-          <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-purple-600 to-pink-500 flex items-center justify-center text-sm font-bold text-white">
-                V
-              </div>
-              <div>
-                <span className="text-[15px] font-semibold text-white">
-                  Victoria
+        <div className="flex items-center justify-between px-4 py-3 bg-[#111118] border-b border-[var(--border)]">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-purple-600 to-pink-500 flex items-center justify-center text-sm font-bold text-white">
+              V
+            </div>
+            <div>
+              <span className="text-[15px] font-semibold text-white">
+                Victoria
+              </span>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <Circle
+                  size={8}
+                  className={`fill-current ${
+                    isConnected ? "text-green-400" : "text-red-400"
+                  }`}
+                />
+                <span className="text-[11px] text-[var(--muted)]">
+                  {isTyping
+                    ? "typing..."
+                    : isConnected
+                    ? "online"
+                    : "offline"}
                 </span>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <Circle
-                    size={8}
-                    className={`fill-current ${
-                      isConnected ? "text-green-400" : "text-red-400"
-                    }`}
-                  />
-                  <span className="text-[11px] text-[var(--muted)]">
-                    {isTyping
-                      ? "typing..."
-                      : isConnected
-                      ? "online"
-                      : "offline"}
-                  </span>
-                </div>
               </div>
             </div>
-            {/* Scene location + compact heat gauge under her name (story mode only) */}
+            {/* Compact heat gauge next to her name (story mode only) */}
             {mode === "story" && (
-              <div className="pl-12 flex flex-col gap-1">
-                <div className="flex items-center gap-1 text-[11px] text-[var(--muted)]">
-                  <MapPin size={11} className="text-purple-300/70" />
-                  <span>Her bedroom</span>
-                </div>
+              <div className="pl-2">
                 <StoryMeter heat={storyHeat} compact />
               </div>
             )}
