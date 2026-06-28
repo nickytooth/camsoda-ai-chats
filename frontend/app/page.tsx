@@ -154,6 +154,14 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
   // so a reload already shows the correct set).
   const visibleMessages = messages.filter((msg) => msg.mode === mode);
 
+  // Read receipts (sexting only): every user message keeps its ticks. A message
+  // is "Read" (blue) once she has a reply after it; until then it shows the grey
+  // sent/delivered ticks (the bubble animates them in).
+  const readByIndex = visibleMessages.map((msg, i) =>
+    msg.role === "user" &&
+    visibleMessages.slice(i + 1).some((m) => m.role === "assistant")
+  );
+
   return (
     <div className="flex h-screen">
       {/* ---- Chat area ---- */}
@@ -221,11 +229,13 @@ function ChatView({ userName, userId, onReset }: { userName: string; userId: num
               Start a conversation...
             </div>
           )}
-          {visibleMessages.map((msg) => (
+          {visibleMessages.map((msg, i) => (
             <ChatBubble
               key={msg.id}
               message={msg}
               isStory={mode === "story"}
+              showReceipt={mode === "sexting"}
+              read={readByIndex[i]}
               onUnlock={unlockPhoto}
               onTopUp={topUp}
             />

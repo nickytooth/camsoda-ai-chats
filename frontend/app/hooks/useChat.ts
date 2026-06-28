@@ -40,6 +40,10 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
   const [storyHeat, setStoryHeat] = useState<StoryHeat | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<NodeJS.Timeout | null>(null);
+  // Delay before her typing bubble appears after a send, so it doesn't pop in
+  // instantly (feels more human). Story sets typing locally on send, so this
+  // only meaningfully affects sexting.
+  const typingTimer = useRef<NodeJS.Timeout | null>(null);
   const idCounter = useRef(0);
   const openingAnimating = useRef(false);
   // The sexting opening is animated once per session. Without this, switching
@@ -135,12 +139,15 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
 
       switch (data.type) {
         case "typing_start":
-          setIsTyping(true);
+          if (typingTimer.current) clearTimeout(typingTimer.current);
+          typingTimer.current = setTimeout(() => setIsTyping(true), 1000);
           break;
         case "typing_end":
+          if (typingTimer.current) { clearTimeout(typingTimer.current); typingTimer.current = null; }
           setIsTyping(false);
           break;
         case "message":
+          if (typingTimer.current) { clearTimeout(typingTimer.current); typingTimer.current = null; }
           setIsTyping(false);
           setIsWaitingStory(false);
           const newMsg: ChatMessage = {
@@ -153,6 +160,7 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
           setMessages((prev) => [...prev, newMsg]);
           break;
         case "image":
+          if (typingTimer.current) { clearTimeout(typingTimer.current); typingTimer.current = null; }
           setIsTyping(false);
           const imageUrl = data.url?.startsWith("http") ? data.url : `${API_BASE}${data.url}`;
           const imgMsg: ChatMessage = {
@@ -365,6 +373,7 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
     refreshBalance();
     return () => {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      if (typingTimer.current) clearTimeout(typingTimer.current);
       wsRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

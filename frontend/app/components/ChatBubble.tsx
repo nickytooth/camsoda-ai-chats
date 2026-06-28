@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
-import { Lock } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Lock, Check, CheckCheck } from "lucide-react";
 import { ChatMessage, UnlockResult } from "../hooks/useChat";
 
 function formatTime(ts: number): string {
@@ -29,12 +29,45 @@ function renderContent(content: string, isStory: boolean) {
 interface Props {
   message: ChatMessage;
   isStory: boolean;
+  showReceipt?: boolean;
+  read?: boolean;
   onUnlock?: (photoUrl: string, messageId: string) => Promise<UnlockResult>;
   onTopUp?: () => Promise<void>;
 }
 
-export default function ChatBubble({ message, isStory, onUnlock, onTopUp }: Props) {
+export default function ChatBubble({ message, isStory, showReceipt, read, onUnlock, onTopUp }: Props) {
   const isUser = message.role === "user";
+
+  // WhatsApp-style read receipts (sexting only), shown under EVERY user message
+  // and kept there. A fresh message animates: one grey tick the instant it's
+  // sent, then after ~1s flips to blue "Read" with double ticks — right as her
+  // typing bubble appears. Already-read history messages render blue immediately.
+  const [autoRead, setAutoRead] = useState(false);
+  useEffect(() => {
+    if (!isUser || !showReceipt || read) return;
+    setAutoRead(false);
+    const t = setTimeout(() => setAutoRead(true), 1000);
+    return () => clearTimeout(t);
+  }, [isUser, showReceipt, read, message.id]);
+
+  const isRead = read || autoRead;
+
+  let receipt: React.ReactNode = null;
+  if (isUser && showReceipt) {
+    receipt = isRead ? (
+      <span className="inline-flex items-center gap-1">
+        <span className="text-sky-400 font-medium">Read</span>
+        <span>{formatTime(message.timestamp)}</span>
+        <CheckCheck size={14} className="text-sky-400" />
+      </span>
+    ) : (
+      <span className="inline-flex items-center gap-1">
+        <span>{formatTime(message.timestamp)}</span>
+        <Check size={14} className="text-[var(--muted)]" />
+      </span>
+    );
+  }
+
   // A persisted upload (imageUrl, from history) or a live preview bubble whose
   // content is an [image:...] marker — both render as an image.
   const isImage = !!message.imageUrl || message.content.startsWith("[image:");
@@ -96,8 +129,8 @@ export default function ChatBubble({ message, isStory, onUnlock, onTopUp }: Prop
               </div>
             )}
           </div>
-          <div className={`text-[11px] text-[var(--muted)] mt-1 ${isUser ? "text-right" : "text-left"}`}>
-            {formatTime(message.timestamp)}
+          <div className={`text-[11px] text-[var(--muted)] mt-1 flex items-center gap-1 ${isUser ? "justify-end" : "justify-start"}`}>
+            {receipt ?? formatTime(message.timestamp)}
           </div>
         </div>
       </div>
@@ -128,11 +161,11 @@ export default function ChatBubble({ message, isStory, onUnlock, onTopUp }: Prop
 
         {/* Timestamp */}
         <div
-          className={`text-[11px] text-[var(--muted)] mt-1 ${
-            isUser ? "text-right pr-1" : "text-left pl-9"
+          className={`text-[11px] text-[var(--muted)] mt-1 flex items-center gap-1 ${
+            isUser ? "justify-end pr-1" : "justify-start pl-9"
           }`}
         >
-          {formatTime(message.timestamp)}
+          {receipt ?? formatTime(message.timestamp)}
         </div>
       </div>
     </div>
