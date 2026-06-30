@@ -37,12 +37,13 @@ logger = logging.getLogger(__name__)
 
 # Global chat engine
 engine: ChatEngine | None = None
+moderation_provider = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize DB and providers on startup."""
-    global engine
+    global engine, moderation_provider
 
     logger.info("Initializing database...")
     await init_db()
@@ -70,6 +71,11 @@ async def lifespan(app: FastAPI):
     # replies (suggestions + Grok fallback), so speed matters more than reasoning.
     fallback_provider = GeminiProvider(GEMINI_FALLBACK_MODEL, thinking_budget=0)
     vision_provider = GrokProvider()
+    # Input moderation: Grok, not Gemini. Gemini's non-configurable
+    # PROHIBITED_CONTENT filter refuses to even classify the very content we
+    # need to detect (bestiality, CSAM, etc.), returning an empty response.
+    # Grok reliably classifies it and still distinguishes adult roleplay.
+    moderation_provider = GrokProvider()
 
     engine = ChatEngine(
         persona=persona,
@@ -250,6 +256,17 @@ async def reset_user(user_id: int = Query(default=None)):
         logger.info("Reset all data for user %d", uid)
     finally:
         await conn.close()
+
+    # Clear in-memory per-user state too — otherwise a stuck/old batch task, a
+    # held processing lock, or stale counters survive the reset and can block
+    # the fresh conversation (the "no reply after reset" bug).
+    _cancel_idle(uid)
+    nudge_counts.pop(uid, None)
+    if engine:
+        engine.clear_user_state(uid)
+    from bot.memory.ltm import clear_retrieval_state
+    clear_retrieval_state(uid)
+
     return {"status": "ok", "user_id": uid}
 
 
@@ -464,6 +481,21 @@ async def websocket_chat(ws: WebSocket, user_id: int = Query(default=None), user
 
             if not text and not image_bytes:
                 continue
+
+            # Input moderation gate — runs BEFORE the engine. Blocks prohibited
+            # content (underage, bestiality, non-consent) with a system bubble
+            # instead of letting it reach the LLM and getting a silent refusal.
+            if text:
+                from bot.moderation import moderate
+                mod_result = await moderate(text, moderation_provider)
+                if mod_result.flagged:
+                    logger.warning(
+                        "Message flagged [%s] for user %d: %s",
+                        mod_result.category, user_id, text[:80],
+                    )
+                    await manager.send_json(user_id, {"type": "typing_end"})
+                    await manager.send_json(user_id, {"type": "flagged", "mode": mode})
+                    continue
 
             # User is active again — cancel any pending idle nudge and reset
             # the consecutive-nudge counter so she can nudge again later.

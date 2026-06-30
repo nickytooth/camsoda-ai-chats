@@ -36,6 +36,17 @@ interface Props {
 }
 
 export default function ChatBubble({ message, isStory, showReceipt, read, onUnlock, onTopUp }: Props) {
+  // System messages (moderation flags) — centered grey bubble, no avatar
+  if (message.role === "system") {
+    return (
+      <div className="flex justify-center mb-3 px-4">
+        <div className="bg-[var(--border)]/40 text-[var(--muted)] text-[12px] text-center rounded-lg px-3 py-2 max-w-[80%]">
+          {message.content}
+        </div>
+      </div>
+    );
+  }
+
   const isUser = message.role === "user";
 
   // WhatsApp-style read receipts (sexting only), shown under EVERY user message

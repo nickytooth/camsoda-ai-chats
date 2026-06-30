@@ -6,7 +6,7 @@ import type { StoryHeat } from "../components/StoryMeter";
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   timestamp: number;
   mode: "sexting" | "story";
@@ -174,6 +174,18 @@ export function useChat({ wsUrl = `${WS_BASE}/ws/chat`, userId = 1, userName = "
             photoUrl: data.photo_url || data.url,
           };
           setMessages((prev) => [...prev, imgMsg]);
+          break;
+        case "flagged":
+          if (typingTimer.current) { clearTimeout(typingTimer.current); typingTimer.current = null; }
+          setIsTyping(false);
+          setIsWaitingStory(false);
+          setMessages((prev) => [...prev, {
+            id: genId(),
+            role: "system",
+            content: "This message was flagged as inappropriate. Please try again.",
+            timestamp: Date.now() / 1000,
+            mode: data.mode || "sexting",
+          }]);
           break;
         case "story_heat":
           setStoryHeat({

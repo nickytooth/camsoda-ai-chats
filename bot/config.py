@@ -74,6 +74,11 @@ SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 # user's LAST message; every new message resets the countdown.
 SEXTING_DEBOUNCE_SECONDS = float(os.getenv("SEXTING_DEBOUNCE_SECONDS", "5"))
 
+# Max seconds to wait for a single LLM generation before treating it as a
+# failure and falling back. Prevents a hung provider request from freezing the
+# chat (the "typing…" indicator stuck forever).
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "45"))
+
 # Memory settings
 # STM_MAX_TURNS counts USER turns (one user message = one turn). Once a user has
 # this many turns, the oldest messages are summarised into LTM. Note that

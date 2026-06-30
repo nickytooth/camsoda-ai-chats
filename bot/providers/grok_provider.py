@@ -2,7 +2,7 @@ import base64
 import logging
 from openai import AsyncOpenAI
 from bot.providers.base import LLMProvider
-from bot.config import XAI_API_KEY, XAI_MODEL
+from bot.config import XAI_API_KEY, XAI_MODEL, LLM_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ class GrokProvider(LLMProvider):
             model=XAI_MODEL,
             messages=messages,
             max_tokens=1024,
+            timeout=LLM_TIMEOUT_SECONDS,
         )
         return response.choices[0].message.content
 
@@ -39,6 +40,7 @@ class GrokProvider(LLMProvider):
             model=XAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1024,
+            timeout=LLM_TIMEOUT_SECONDS,
         )
         return response.choices[0].message.content
 

@@ -24,7 +24,7 @@ from bot.content_library import pick_unshared, mark_shared, get_examples, librar
 from bot.time_context import get_time_period, get_preferred_tags, get_scene
 from bot.photo_content import pick_current_location_photo, has_sendable_photo
 from bot.providers.base import LLMProvider
-from bot.config import STM_MAX_TURNS, STORY_FILE, UPLOADS_DIR, IDLE_PHOTO_CHANCE
+from bot.config import STM_MAX_TURNS, STORY_FILE, UPLOADS_DIR, IDLE_PHOTO_CHANCE, LLM_TIMEOUT_SECONDS
 from bot.memory.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -333,6 +333,65 @@ class ChatEngine:
             self._batch_tasks[user_id] = asyncio.create_task(
                 self._batch_collect(user_id, on_response)
             )
+
+    # Soft, in-character lines used ONLY as a last resort, when both the primary
+    # (Grok) and the fallback (Gemini) return nothing/refuse. They keep the
+    # conversation alive instead of leaving the user staring at silence.
+    _GRACEFUL_DEFLECTIONS = [
+        "Mmm, you scattered my thoughts for a second there... say that again for me?",
+        "You've got me a little distracted right now... tell me again, slowly?",
+        "Hold that thought — my mind just wandered somewhere warm. What were you saying?",
+        "Mmm, I lost my train of thought looking at you... come back to that for me?",
+        "Say that to me again — I want to give it my full attention this time.",
+    ]
+
+    @staticmethod
+    def _graceful_deflection() -> str:
+        return random.choice(ChatEngine._GRACEFUL_DEFLECTIONS)
+
+    async def _generate_with_fallback(self, provider: LLMProvider, prompt_messages: list[dict]) -> str:
+        """Generate a sexting reply, hardened against hangs and silent refusals.
+
+        Grok is the primary generator. We fall back to the dedicated Gemini 2.5
+        Flash provider (safety filters OFF) not only when Grok raises, but ALSO
+        when it returns an empty/blank string — a hard content-policy refusal
+        often comes back as empty content rather than an exception, which the old
+        code mistook for "nothing to say" and went silent. Each call is bounded
+        by LLM_TIMEOUT_SECONDS so a hung request can't freeze the chat. Returns
+        "" only if BOTH fail; the caller then substitutes a graceful line.
+        """
+        text = ""
+        try:
+            text = await asyncio.wait_for(
+                provider.generate(prompt_messages), timeout=LLM_TIMEOUT_SECONDS
+            )
+        except Exception as e:
+            logger.warning("Primary (Grok) generation failed/timed out: %s", e)
+
+        if text and text.strip():
+            return text
+
+        logger.warning("Primary returned empty/refused — falling back to Gemini")
+        try:
+            text = await asyncio.wait_for(
+                self.fallback_provider.generate(prompt_messages), timeout=LLM_TIMEOUT_SECONDS
+            )
+        except Exception as e2:
+            logger.error("Fallback (Gemini) generation also failed: %s", e2)
+            return ""
+        return text or ""
+
+    def clear_user_state(self, user_id: int) -> None:
+        """Drop ALL in-memory per-user state. Called on reset so a stuck/old
+        batch task (or a held processing lock) can never block the fresh
+        conversation — the bug where, after reset, the user got no reply."""
+        task = self._batch_tasks.pop(user_id, None)
+        if task and not task.done():
+            task.cancel()
+        self._pending.pop(user_id, None)
+        self._last_activity.pop(user_id, None)
+        self._processing_lock.pop(user_id, None)
+        self._pending_photo_offer.pop(user_id, None)
 
     async def suggest_reply(self, user_id: int, mode: str = "sexting") -> str:
         """
@@ -1001,21 +1060,14 @@ class ChatEngine:
             photo_hint=photo_hint,
         )
 
-        try:
-            response_text = await provider.generate(prompt_messages)
-        except Exception as e:
-            # Grok is the only sexting generator; fall back to the dedicated
-            # Gemini 2.5 Flash provider rather than the SFW model, which would
-            # refuse the explicit prompt.
-            logger.warning("Grok provider failed: %s — falling back to Gemini", e)
-            try:
-                response_text = await self.fallback_provider.generate(prompt_messages)
-            except Exception as e2:
-                logger.error("Fallback provider also failed: %s", e2)
-                return ChatResponse(messages=["..."])
-
+        response_text = await self._generate_with_fallback(provider, prompt_messages)
         if not response_text or not response_text.strip():
-            return ChatResponse()
+            # Never dead-end the conversation. A hard content-policy refusal from
+            # Grok often comes back as EMPTY content (not an exception), and the
+            # Gemini fallback may also refuse — in that case reply with a soft
+            # in-character line instead of going silent (the old behaviour left
+            # the user with the typing indicator vanishing and no message).
+            response_text = self._graceful_deflection()
 
         response_parts = None
         if is_user_photo:

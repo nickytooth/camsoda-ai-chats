@@ -37,6 +37,13 @@ _LTM_EVERY_N_TURNS = 5
 _GAP_THRESHOLD = 3600  # 1 hour
 
 
+def clear_retrieval_state(user_id: int) -> None:
+    """Drop the in-memory retrieval-gating counters for a user (called on reset),
+    so a fresh conversation starts with clean turn/gap tracking."""
+    _turn_counter.pop(user_id, None)
+    _last_message_time.pop(user_id, None)
+
+
 def should_retrieve(user_id: int, message: str) -> bool:
     """Decide whether LTM retrieval is worth the embed API call."""
     now = time.time()
